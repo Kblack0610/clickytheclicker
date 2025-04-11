@@ -85,15 +85,15 @@ xinput --test-xi2 $POINTER_ID  # Monitor events
 
 ## Implementation Tasks
 
-[ ] Research xinput approach in detail
-   - [ ] Test creating virtual input devices
-   - [ ] Determine if permissions can be handled gracefully
-   - [ ] Experiment with sending events to specific windows
+[X] Research xinput approach in detail
+   - [X] Test creating virtual input devices (implemented proof of concept in xinput_poc.py)
+   - [X] Determine if permissions can be handled gracefully (requires root for creating virtual input devices)
+   - [X] Experiment with sending events to specific windows (implemented in InputManager)
 
-[ ] Create modular structure
-   - [ ] Define clear interfaces between modules
-   - [ ] Refactor existing code into modules
-   - [ ] Implement proper dependency injection
+[X] Create modular structure
+   - [X] Define clear interfaces between modules
+   - [X] Create new modular framework in /modules directory
+   - [X] Implement dependency injection via constructor parameters
 
 [ ] Set up testing framework
    - [ ] Create mock objects for X11 interactions
