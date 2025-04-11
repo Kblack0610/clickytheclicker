@@ -20,11 +20,13 @@ class ConfigManager:
         Initialize the configuration manager.
         
         Args:
-            config_dir: Directory for configuration files (default: ~/.config/clicky-clicker)
+            config_dir: Directory for configuration files (default: <app_dir>/config)
         """
         if config_dir is None:
-            # Default to ~/.config/clicky-clicker/
-            self.config_dir = os.path.expanduser("~/.config/clicky-clicker")
+            # Get the application directory (directory where the module resides)
+            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # Default to <app_dir>/config/
+            self.config_dir = os.path.join(app_dir, "config")
         else:
             self.config_dir = config_dir
         
@@ -61,11 +63,19 @@ class ConfigManager:
         if not filename.endswith('.json'):
             filename += '.json'
         
-        # If filename doesn't have path, add config directory
-        if not os.path.dirname(filename):
+        # First, try with the path as provided
+        filepath = filename
+        
+        # If that doesn't exist and the filename doesn't have a directory path,
+        # try in the config directory
+        if not os.path.exists(filepath) and not os.path.dirname(filename):
             filepath = os.path.join(self.config_dir, filename)
-        else:
-            filepath = filename
+        
+        if not os.path.exists(filepath):
+            print(f"Configuration file not found: {filename}")
+            print(f"Searched in: {filepath}")
+            print(f"Config directory is: {self.config_dir}")
+            return None
         
         try:
             with open(filepath, 'r') as f:

@@ -15,6 +15,7 @@ from typing import List, Dict, Tuple, Optional, Any, Callable
 from .input_manager import InputManager
 from .window_manager import WindowManager
 from .image_processor import ImageProcessor
+from .error_recovery import ErrorRecoveryManager, RecoveryAction, RecoveryStrategy
 
 class ActionController:
     """
@@ -22,7 +23,8 @@ class ActionController:
     """
     
     def __init__(self, input_manager: InputManager, window_manager: WindowManager, 
-                image_processor: ImageProcessor, debug_mode: bool = False):
+                image_processor: ImageProcessor, debug_mode: bool = False,
+                enable_recovery: bool = True, create_checkpoints: bool = True):
         """
         Initialize the action controller.
         
@@ -31,6 +33,8 @@ class ActionController:
             window_manager: WindowManager instance for window operations
             image_processor: ImageProcessor instance for image operations
             debug_mode: Whether to output debug information
+            enable_recovery: Whether to enable error recovery mechanisms
+            create_checkpoints: Whether to create checkpoints during automation
         """
         self.input_manager = input_manager
         self.window_manager = window_manager
@@ -43,6 +47,19 @@ class ActionController:
         self.loop_actions = False
         self.continuous_mode = False
         self.click_interval = 0.1  # Time between actions in seconds
+        
+        # Error recovery options
+        self.enable_recovery = enable_recovery
+        self.create_checkpoints = create_checkpoints
+        
+        # Initialize error recovery manager if enabled
+        self.recovery_manager = None
+        if enable_recovery:
+            self.recovery_manager = ErrorRecoveryManager(
+                window_manager=window_manager,
+                image_processor=image_processor,
+                debug_mode=debug_mode
+            )
         
         # Statistics tracking
         self.stats = self._create_stats()
@@ -59,19 +76,27 @@ class ActionController:
             'failed_details': []
         }
     
-    def load_actions(self, config_file: str) -> bool:
+    def load_actions(self, config_file: str, config_manager=None) -> bool:
         """
         Load actions from a configuration file.
         
         Args:
             config_file: Path to the configuration file
+            config_manager: Optional ConfigManager for resolving paths
             
         Returns:
             Whether loading was successful
         """
         try:
-            with open(config_file, 'r') as f:
-                config = json.load(f)
+            # If config_manager is provided, use it to load the config
+            if config_manager is not None:
+                config = config_manager.load_config(config_file)
+                if config is None:
+                    return False
+            else:
+                # Direct file loading (fallback)
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
             
             # Extract actions from config
             self.actions = config.get('actions', [])
@@ -82,7 +107,7 @@ class ActionController:
             self.click_interval = config.get('click_interval', 0.1)
             
             if self.debug_mode:
-                print(f"Loaded {len(self.actions)} actions from {config_file}")
+                print(f"Loaded {len(self.actions)} actions from config")
                 print(f"Settings: loop={self.loop_actions}, continuous={self.continuous_mode}, interval={self.click_interval}")
             
             return True
@@ -135,13 +160,15 @@ class ActionController:
                 print(f"Error saving actions: {e}")
             return False
     
-    def run_automation(self, window_id: Optional[int] = None, max_cycles: int = 0) -> Dict[str, Any]:
+    def run_automation(self, window_id: Optional[int] = None, max_cycles: int = 0,
+                      max_failures: int = 10) -> Dict[str, Any]:
         """
         Run the automation sequence.
         
         Args:
             window_id: Optional window ID to target
             max_cycles: Maximum number of cycles (0 = unlimited)
+            max_failures: Maximum consecutive failures before stopping (0 = unlimited)
             
         Returns:
             Statistics about the automation run
@@ -152,6 +179,9 @@ class ActionController:
         try:
             self.is_running = True
             action_index = 0
+            consecutive_failures = 0
+            retry_count = 0
+            checkpoint_interval = max(5, len(self.actions) // 5)  # Create checkpoints every ~20% of actions
             
             print(f"Starting automation with {len(self.actions)} actions")
             
@@ -161,11 +191,32 @@ class ActionController:
                     print(f"Reached maximum cycles ({max_cycles})")
                     break
                 
+                # Check if we've had too many consecutive failures
+                if max_failures > 0 and consecutive_failures >= max_failures:
+                    print(f"Stopping after {consecutive_failures} consecutive failures")
+                    break
+                
                 # Get the current action
                 action = self.actions[action_index]
                 
+                # Create checkpoint if enabled and it's time for one
+                if (self.enable_recovery and self.recovery_manager and self.create_checkpoints and
+                    action_index % checkpoint_interval == 0 and retry_count == 0):
+                    screenshot = None
+                    if window_id:
+                        try:
+                            screenshot = self.image_processor.capture_window_screenshot(window_id)
+                        except Exception:
+                            pass  # Ignore screenshot errors
+                    
+                    self.recovery_manager.create_checkpoint(action_index, window_id, screenshot)
+                    if self.debug_mode:
+                        print(f"Created checkpoint at action index {action_index}")
+                
                 if self.debug_mode:
                     print(f"\nPerforming action: {action.get('type', 'unknown')}")
+                    if retry_count > 0:
+                        print(f"Retry attempt {retry_count}")
                 
                 # Perform the action
                 success, action_desc = self.perform_action(action, window_id)
@@ -181,26 +232,80 @@ class ActionController:
                     self.stats['action_counts'][action_type]['success'] += 1
                     self.stats['successful_details'].append(action_desc)
                     
+                    # Reset consecutive failures and retry count
+                    consecutive_failures = 0
+                    retry_count = 0
+                    
                     if not self.debug_mode:
                         print(f"✓ {action_desc}")
                 else:
                     self.stats['failed_actions'] += 1
                     self.stats['action_counts'][action_type]['fail'] += 1
                     self.stats['failed_details'].append(action_desc)
+                    consecutive_failures += 1
                     
                     if not self.debug_mode:
                         print(f"✗ {action_desc}")
                 
-                # Handle required actions
-                if not success and action.get('required', False):
-                    if self.continuous_mode:
-                        print(f"Required action failed, will retry in 2 seconds (continuous mode)")
-                        time.sleep(2)
-                        # Stay on the same action index to retry
-                        continue
-                    else:
-                        print(f"Required action failed, stopping automation")
-                        break
+                # Handle failures with recovery mechanisms if enabled
+                if not success:
+                    if self.enable_recovery and self.recovery_manager:
+                        # Get recovery strategy for this action
+                        recovery = self.recovery_manager.get_recovery_for_action(action)
+                        
+                        # Apply recovery strategy
+                        recovery_success, next_action, next_index = self.recovery_manager.apply_recovery_strategy(
+                            failed_action=action,
+                            recovery=recovery,
+                            action_index=action_index,
+                            window_id=window_id
+                        )
+                        
+                        if recovery_success:
+                            if next_action is not None:
+                                # Use the next action (either original or fallback)
+                                action = next_action
+                                
+                                # If it's the same action, increment retry count
+                                if next_index == action_index:
+                                    retry_count += 1
+                                    
+                                    # Check if we've exceeded max retries
+                                    max_retries = recovery.params.get('max_retries', 3)
+                                    if retry_count > max_retries:
+                                        print(f"Exceeded maximum retries ({max_retries}) for action")
+                                        retry_count = 0
+                                        action_index = (action_index + 1) % len(self.actions)
+                                    else:
+                                        # Stay on the same action
+                                        continue
+                                else:
+                                    # Going to a different action index
+                                    action_index = next_index
+                                    retry_count = 0
+                                    continue
+                            else:
+                                # No next action specified, go to next index
+                                action_index = next_index
+                                retry_count = 0
+                                if action_index < 0:  # Special case for abort
+                                    print("Aborting automation sequence")
+                                    break
+                                continue
+                        else:
+                            # Recovery strategy failed
+                            print(f"Recovery strategy failed for action")
+                    
+                    # Without recovery, handle required actions
+                    if action.get('required', False):
+                        if self.continuous_mode:
+                            print(f"Required action failed, will retry in 2 seconds (continuous mode)")
+                            time.sleep(2)
+                            # Stay on the same action index to retry
+                            continue
+                        else:
+                            print(f"Required action failed, stopping automation")
+                            break
                 
                 # Move to next action (cycling through the list if loop is enabled)
                 action_index = (action_index + 1) % len(self.actions)
@@ -295,29 +400,31 @@ class ActionController:
                 elif action_type == 'click_text':
                     text = action.get('text', '')
                     
-                    if self.debug_mode:
-                        print(f"Looking for text: '{text}'")
+                    print(f"Looking for text: '{text}'")
                     
                     # Take screenshot
                     screenshot = self.image_processor.capture_window_screenshot(window_id)
                     if screenshot is None:
-                        if self.debug_mode:
-                            print("Failed to capture screenshot")
+                        print("Failed to capture screenshot")
                         return False, action_desc
                     
-                    # Find text in screenshot
+                    # Try direct OCR first
                     result = self.image_processor.find_text_in_screenshot(text, screenshot)
+                    
+                    # If OCR failed, try special handling for common UI elements
+                    if not result:
+                        result = self._find_common_ui_element(text, window_id)
+                        if result:
+                            print(f"Found UI element '{text}' using special handling")
+                    
                     if result:
                         x, y, confidence = result
-                        
-                        if self.debug_mode:
-                            print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
+                        print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
                         
                         # Click at the text position
                         success = self.input_manager.click(x, y, action.get('button', 1), window_id)
                     else:
-                        if self.debug_mode:
-                            print(f"Text '{text}' not found")
+                        print(f"Text '{text}' not found")
                         success = False
                 
                 elif action_type == 'click_template':
@@ -399,6 +506,60 @@ class ActionController:
         # If we get here, all attempts failed
         return False, action_desc
     
+    def _find_common_ui_element(self, text: str, window_id: int) -> Optional[Tuple[int, int, float]]:
+        """
+        Specialized helper to find common UI elements that OCR might miss.
+        
+        Args:
+            text: The text to find
+            window_id: The window ID to search in
+            
+        Returns:
+            Tuple of (x, y, confidence) if found, None otherwise
+        """
+        # Get window dimensions
+        window_geometry = self.window_manager.get_window_geometry(window_id)
+        if not window_geometry:
+            return None
+            
+        width, height = window_geometry[2], window_geometry[3]
+        print(f"Window dimensions: {width}x{height}")
+        
+        # Normalized text for case-insensitive comparison
+        norm_text = text.lower().strip()
+        
+        # Handle specific UI elements
+        if "resume the conversation" in norm_text:
+            # Usually appears at the bottom of message windows
+            # Try several positions at the bottom of the window
+            print(f"Trying hard-coded positions for 'resume the conversation'")
+            
+            # Return coordinates at the bottom center of the window
+            x = width // 2
+            y = height - 40  # 40 pixels from bottom
+            return (x, y, 0.9)  # High confidence because we're specifically targeting this element
+            
+        elif "try again" in norm_text:
+            # Usually appears as a button, often at bottom or center
+            print(f"Trying hard-coded positions for 'Try Again'")
+            
+            # Try a position near the bottom of the window
+            x = width // 2
+            y = height - 100  # 100 pixels from bottom
+            return (x, y, 0.9)
+            
+        elif "accept" in norm_text:
+            # Usually appears as a button on dialogs
+            print(f"Trying hard-coded positions for 'Accept'")
+            
+            # Try a position in the bottom right area
+            x = width * 3 // 4
+            y = height - 80  # 80 pixels from bottom
+            return (x, y, 0.9)
+        
+        # No special handling for this text
+        return None
+        
     def _get_action_description(self, action: Dict[str, Any]) -> str:
         """
         Get a descriptive string for an action.

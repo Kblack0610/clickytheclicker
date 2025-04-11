@@ -1,0 +1,10 @@
+{
+  "actions": [
+    {
+      "type": "click_position",
+      "x": 100,
+      "y": 100,
+      "description": "Click at position 100,100"
+    }
+  ]
+}

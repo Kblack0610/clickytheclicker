@@ -7,6 +7,7 @@ Handles command-line arguments and user interaction for the autoclicker.
 
 import os
 import sys
+import time
 import argparse
 import json
 from typing import List, Dict, Any, Optional
@@ -16,6 +17,7 @@ from .window_manager import WindowManager
 from .image_processor import ImageProcessor
 from .action_controller import ActionController
 from .config_manager import ConfigManager
+from .recorder import ActionRecorder, ActionAnalyzer
 
 class CLI:
     """
@@ -55,6 +57,14 @@ class CLI:
         action_group.add_argument('--config', type=str, help="Path to configuration file")
         action_group.add_argument('--list-configs', action='store_true', help="List available configurations")
         action_group.add_argument('--save-config', type=str, help="Save current sequence to a configuration file")
+        
+        # Recording options
+        record_group = parser.add_argument_group('Recording')
+        record_group.add_argument('--record', action='store_true', help="Record actions for later replay")
+        record_group.add_argument('--record-output', type=str, help="File to save recorded actions to")
+        record_group.add_argument('--no-keyboard', action='store_true', help="Don't record keyboard events")
+        record_group.add_argument('--no-mouse', action='store_true', help="Don't record mouse events")
+        record_group.add_argument('--optimize', action='store_true', help="Optimize recorded actions for reliability")
         
         # Execution control
         exec_group = parser.add_argument_group('Execution Control')
@@ -231,16 +241,117 @@ class CLI:
             
             # Load configuration
             if args.config:
-                if not os.path.exists(args.config):
-                    print(f"Configuration file not found: {args.config}")
-                    return 1
+                # Use ActionController with ConfigManager for path resolution
+                success = action_controller.load_actions(
+                    config_file=args.config,
+                    config_manager=self.config_manager
+                )
                 
-                success = action_controller.load_actions(args.config)
                 if not success:
-                    print(f"Failed to load configuration: {args.config}")
+                    # Error message already printed by ConfigManager
                     return 1
                 
-                print(f"Loaded configuration from {args.config}")
+                print(f"Loaded {len(action_controller.actions)} actions from configuration")
+            
+            # Recording functionality
+            if args.record:
+                if not window_id:
+                    print("No window specified for recording. Use --window-id or --window-name.")
+                    return 1
+                
+                # Initialize recorder
+                recorder = ActionRecorder(
+                    window_manager=window_manager,
+                    image_processor=image_processor,
+                    debug_mode=args.debug
+                )
+                
+                # Determine what to record
+                record_keyboard = not args.no_keyboard
+                record_mouse = not args.no_mouse
+                
+                if not record_keyboard and not record_mouse:
+                    print("Must record either keyboard or mouse events. Enabling both.")
+                    record_keyboard = True
+                    record_mouse = True
+                
+                # Start recording
+                print(f"Starting recording in window ID {window_id}")
+                print("Press Ctrl+C to stop recording")
+                
+                if record_keyboard and record_mouse:
+                    print("Recording keyboard and mouse events")
+                elif record_keyboard:
+                    print("Recording keyboard events only")
+                elif record_mouse:
+                    print("Recording mouse events only")
+                
+                success = recorder.start_recording(
+                    window_id=window_id,
+                    record_keyboard=record_keyboard,
+                    record_mouse=record_mouse
+                )
+                
+                if not success:
+                    print("Failed to start recording")
+                    return 1
+                
+                try:
+                    # Wait for user to press Ctrl+C
+                    while True:
+                        time.sleep(0.5)
+                except KeyboardInterrupt:
+                    print("\nStopping recording...")
+                
+                # Stop recording
+                actions = recorder.stop_recording()
+                
+                if not actions:
+                    print("No actions recorded")
+                    recorder.cleanup()
+                    return 1
+                
+                print(f"Recorded {len(actions)} actions")
+                
+                # Optimize if requested
+                if args.optimize and len(actions) > 1:
+                    analyzer = ActionAnalyzer(
+                        window_manager=window_manager,
+                        image_processor=image_processor,
+                        debug_mode=args.debug
+                    )
+                    
+                    actions = analyzer.optimize_action_sequence(actions)
+                    print(f"Optimized to {len(actions)} actions")
+                
+                # Save to file if output specified
+                output_file = args.record_output
+                if not output_file:
+                    # Generate default filename based on window name and timestamp
+                    window = window_manager.get_window_by_id(window_id)
+                    window_name = window["name"] if window else "window"
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    
+                    # Sanitize window name for filename
+                    window_name = ''.join(c for c in window_name if c.isalnum() or c in ' _-').strip()
+                    window_name = window_name.replace(' ', '_')
+                    
+                    output_file = f"{window_name}_{timestamp}.json"
+                    
+                    # Use config directory
+                    output_file = os.path.join(self.config_manager.config_dir, output_file)
+                
+                success = recorder.save_recording(output_file)
+                
+                if success:
+                    print(f"Saved recording to {output_file}")
+                else:
+                    print(f"Failed to save recording to {output_file}")
+                
+                # Clean up
+                recorder.cleanup()
+                
+                return 0 if success else 1
             
             # Save configuration
             if args.save_config:

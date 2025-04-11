@@ -58,7 +58,7 @@ class ImageProcessor:
             print(f"- Template matching: {'Available' if self.has_template_matching else 'Not available (install opencv-python)'}")
             print(f"- Screenshot: {'Available' if self.has_screenshot else 'Not available (install Pillow)'}")
     
-    def capture_window_screenshot(self, window_id: int) -> Optional[Union[str, np.ndarray]]:
+    def capture_window_screenshot(self, window_id: int) -> Optional[Union[str, np.ndarray, 'Image.Image']]:
         """
         Capture a screenshot of a specific window.
         
@@ -66,7 +66,8 @@ class ImageProcessor:
             window_id: X11 window ID
             
         Returns:
-            Path to screenshot image or numpy array if opencv is available, None if failed
+            PIL Image object, numpy array, or path to image file depending on available libraries
+            None if capture failed
         """
         try:
             # Create a temporary file for the screenshot
@@ -92,25 +93,51 @@ class ImageProcessor:
                     print("Screenshot capture failed: output file not created")
                 return None
             
+            # Prioritize PIL Image for better compatibility with various operations
+            if HAVE_PIL:
+                try:
+                    image = Image.open(screenshot_path)
+                    # Keep a copy in memory before removing the file
+                    image_copy = image.copy()
+                    os.unlink(screenshot_path)
+                    return image_copy
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"Error loading with PIL: {e}")
+                    # Continue to try with OpenCV if PIL fails
+            
             # If opencv is available, load the image as a numpy array
             if self.has_template_matching:
-                image = cv2.imread(screenshot_path)
-                # Remove the temporary file since we have the array
-                os.unlink(screenshot_path)
-                return image
-            else:
-                # Return the path to the image file
+                try:
+                    image = cv2.imread(screenshot_path)
+                    # Remove the temporary file since we have the array
+                    os.unlink(screenshot_path)
+                    
+                    # Convert OpenCV BGR to PIL RGB Image if PIL is available for better compatibility
+                    if HAVE_PIL:
+                        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        return Image.fromarray(image_rgb)
+                    return image
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"Error loading with OpenCV: {e}")
+            
+            # If we reach here, we couldn't load with PIL or OpenCV, but the file exists
+            if os.path.exists(screenshot_path):
+                # Return the path to the image file as a last resort
                 return screenshot_path
+            
+            return None
             
         except Exception as e:
             if self.debug_mode:
                 print(f"Error capturing window screenshot: {e}")
             return None
     
-    def find_text_in_screenshot(self, text: str, screenshot: Union[str, np.ndarray], 
-                               min_confidence: float = 0.6) -> Optional[Tuple[int, int, float]]:
+    def find_text_in_screenshot(self, text: str, screenshot: Union[str, np.ndarray, 'Image.Image'], 
+                               min_confidence: float = 0.5) -> Optional[Tuple[int, int, float]]:
         """
-        Find text in a screenshot using OCR.
+        Find text in a screenshot using OCR with enhanced preprocessing.
         
         Args:
             text: Text to find
@@ -126,111 +153,347 @@ class ImageProcessor:
             return None
         
         try:
-            # Load the image if it's a file path
+            # Store the original text for debugging
+            original_text = text
+            # Create a debug directory
+            debug_dir = "/tmp/clicky_debug"
+            if self.debug_mode:
+                os.makedirs(debug_dir, exist_ok=True)
+                debug_time = int(time.time())
+        
+            # Load and prepare the image
+            pil_image = None
+            np_image = None
+            
+            # Handle different input types
             if isinstance(screenshot, str):
-                image = Image.open(screenshot)
-            else:
-                # Convert from OpenCV format to PIL
-                image = Image.fromarray(cv2.cvtColor(screenshot, cv2.COLOR_BGR2RGB))
-            
-            # Get OCR data with detailed info including coordinates
-            ocr_data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-            
-            # Process the OCR results
-            best_match = None
-            best_confidence = 0
-            
-            for i, word_text in enumerate(ocr_data['text']):
-                # Skip empty results
-                if not word_text.strip():
-                    continue
-                
-                # Check confidence
-                confidence = float(ocr_data['conf'][i]) / 100.0
-                if confidence < min_confidence:
-                    continue
-                
-                # Check for direct or fuzzy match
-                if self._text_matches(word_text, text):
-                    # Calculate center of the word
-                    x = ocr_data['left'][i] + ocr_data['width'][i] // 2
-                    y = ocr_data['top'][i] + ocr_data['height'][i] // 2
-                    
-                    if confidence > best_confidence:
-                        best_confidence = confidence
-                        best_match = (x, y, confidence)
-                        
+                if os.path.exists(screenshot):
+                    pil_image = Image.open(screenshot)
+                else:
                     if self.debug_mode:
-                        print(f"Text match: '{word_text}' at ({x}, {y}) with confidence {confidence:.2f}")
+                        print(f"Screenshot file not found: {screenshot}")
+                    return None
+            elif isinstance(screenshot, np.ndarray):
+                np_image = screenshot
+                # Convert BGR to RGB if needed
+                if len(np_image.shape) == 3 and np_image.shape[2] == 3:
+                    np_image_rgb = cv2.cvtColor(np_image, cv2.COLOR_BGR2RGB)
+                    pil_image = Image.fromarray(np_image_rgb)
+                else:
+                    pil_image = Image.fromarray(np_image)
+            elif HAVE_PIL and isinstance(screenshot, Image.Image):
+                pil_image = screenshot
+            else:
+                if self.debug_mode:
+                    print(f"Unsupported screenshot type: {type(screenshot)}")
+                return None
             
-            return best_match
+            # Save the original image for debugging
+            if self.debug_mode:
+                original_path = f"{debug_dir}/original_{debug_time}.png"
+                pil_image.save(original_path)
+                print(f"Saved original image to {original_path}")
+            
+            # Create a list of processed images with different filters for better OCR
+            processed_images = []
+            
+            # Original image (always include first)
+            processed_images.append(("original", pil_image))
+            
+            # Get numpy representation for transformations if needed
+            if np_image is None and self.has_template_matching:
+                np_image = np.array(pil_image)
+                
+            # Only apply these transformations if we have OpenCV available
+            if self.has_template_matching:
+                # Convert to grayscale
+                gray = cv2.cvtColor(np_image, cv2.COLOR_RGB2GRAY) if len(np_image.shape) == 3 else np_image
+                
+                # Apply different thresholds for better text detection
+                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                processed_images.append(("binary", Image.fromarray(binary)))
+                
+                # Inverted binary (for white text on dark backgrounds)
+                inverted = cv2.bitwise_not(binary)
+                processed_images.append(("inverted", Image.fromarray(inverted)))
+                
+                # Adaptive threshold (better for varying backgrounds)
+                adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+                processed_images.append(("adaptive", Image.fromarray(adaptive)))
+                
+            # Debug log the processing steps
+            if self.debug_mode:
+                print(f"Looking for text: '{text}'")
+                print(f"Created {len(processed_images)} image variations for OCR processing")
+                
+                # Save all processed images
+                for name, img in processed_images:
+                    img_path = f"{debug_dir}/{name}_{debug_time}.png"
+                    img.save(img_path)
+                    print(f"Saved {name} image to {img_path}")
+            
+            # Try different OCR configurations with all processed images
+            ocr_configs = [
+                "",  # Default configuration
+                "--psm 6",  # Assume single block of text
+                "--psm 11 --oem 1"  # Sparse text detection
+            ]
+            
+            # Store all detected text blocks from all processing attempts
+            all_blocks = []
+            for proc_name, proc_image in processed_images:
+                for config in ocr_configs:
+                    try:
+                        # Run OCR on this processed image with this config
+                        ocr_data = pytesseract.image_to_data(proc_image, output_type=pytesseract.Output.DICT, config=config)
+                        
+                        # Extract and store text blocks with positions
+                        for i, detected_text in enumerate(ocr_data['text']):
+                            # Skip empty results
+                            if not detected_text.strip():
+                                continue
+                            
+                            # Get confidence and position
+                            conf = float(ocr_data['conf'][i]) / 100.0
+                            if conf < 0.2:  # Filter extremely low confidence to reduce noise
+                                continue
+                                
+                            # Get position and size
+                            x = ocr_data['left'][i]
+                            y = ocr_data['top'][i]
+                            w = ocr_data['width'][i]
+                            h = ocr_data['height'][i]
+                            
+                            # Add to our block collection
+                            all_blocks.append({
+                                'text': detected_text.strip(),
+                                'x': x,
+                                'y': y,
+                                'width': w,
+                                'height': h,
+                                'conf': conf,
+                                'source': f"{proc_name}_{config}"
+                            })
+                            
+                            if self.debug_mode and conf > 0.3:
+                                print(f"Detected: '{detected_text}' at ({x}, {y}) with conf {conf:.2f} [{proc_name} {config}]")
+                    except Exception as e:
+                        if self.debug_mode:
+                            print(f"OCR error with {proc_name} using config '{config}': {e}")
+            
+            # Sort all blocks by confidence (highest first)
+            all_blocks.sort(key=lambda b: b['conf'], reverse=True)
+            
+            # ===== Try different matching strategies =====
+            # 1. Direct text matches (exact or fuzzy)
+            direct_matches = []
+            for block in all_blocks:
+                if self._text_matches(block['text'], text):
+                    # Calculate center of the text block
+                    x = block['x'] + block['width'] // 2
+                    y = block['y'] + block['height'] // 2
+                    direct_matches.append({
+                        'x': x, 
+                        'y': y, 
+                        'conf': block['conf'],
+                        'text': block['text'],
+                        'source': block['source']
+                    })
+            
+            if direct_matches:
+                # Take the match with highest confidence
+                best_match = direct_matches[0]
+                if self.debug_mode:
+                    print(f"Found direct match: '{best_match['text']}' at ({best_match['x']}, {best_match['y']}) "  
+                          f"with conf {best_match['conf']:.2f} [{best_match['source']}]")
+                return (best_match['x'], best_match['y'], best_match['conf'])
+                
+            # 2. Partial word matching for multi-word text
+            if ' ' in text:
+                # Tokenize the search text into words
+                search_parts = text.lower().split()
+                if self.debug_mode:
+                    print(f"Searching for words: {search_parts}")
+                
+                # Track which blocks match which search parts
+                word_matches = {}
+                for block in all_blocks:
+                    block_text = block['text'].lower()
+                    # Check each search word against this block
+                    for word in search_parts:
+                        # Use improved text matching for fuzzy comparison
+                        if self._text_matches(block_text, word, fuzzy_threshold=0.8) or word in block_text:
+                            if word not in word_matches or block['conf'] > word_matches[word]['conf']:
+                                word_matches[word] = block
+                
+                # Find how many words we matched and their quality
+                matched_words = list(word_matches.keys())
+                matched_word_pct = len(matched_words) / len(search_parts)
+                
+                if self.debug_mode:
+                    print(f"Matched {len(matched_words)}/{len(search_parts)} words: {matched_words}")
+                
+                # If we matched at least 50% of the words, consider it a match
+                if matched_word_pct >= 0.5:
+                    # Find the center of the matched blocks
+                    blocks = list(word_matches.values())
+                    min_x = min(b['x'] for b in blocks)
+                    max_x = max(b['x'] + b['width'] for b in blocks)
+                    min_y = min(b['y'] for b in blocks)
+                    max_y = max(b['y'] + b['height'] for b in blocks)
+                    
+                    center_x = min_x + (max_x - min_x) // 2
+                    center_y = min_y + (max_y - min_y) // 2
+                    
+                    # Calculate overall match quality
+                    avg_conf = sum(b['conf'] for b in blocks) / len(blocks)
+                    quality = matched_word_pct * avg_conf
+                    
+                    if self.debug_mode:
+                        print(f"Found partial match for '{original_text}' at ({center_x}, {center_y})")
+                        print(f"  Quality: {quality:.2f} (words: {matched_word_pct:.2f}, conf: {avg_conf:.2f})")
+                    
+                    return (center_x, center_y, quality)
+            
+            # No matches found
+            if self.debug_mode:
+                print(f"No matches found for '{text}'")
+            return None
             
         except Exception as e:
             if self.debug_mode:
                 print(f"Error finding text in screenshot: {e}")
+                import traceback
+                traceback.print_exc()
             return None
     
-    def _text_matches(self, found_text: str, target_text: str) -> bool:
+    def _text_matches(self, found_text: str, target_text: str, fuzzy_threshold: float = 0.75) -> bool:
         """
         Check if found text matches the target text, with some flexibility.
         
         Args:
             found_text: Text found in the image
             target_text: Text we're looking for
+            fuzzy_threshold: Threshold for fuzzy matching (0.0 to 1.0)
             
         Returns:
             Whether the texts match
         """
-        # Convert both to lowercase for comparison
+        import re
+        from difflib import SequenceMatcher
+        
+        # Skip empty texts
+        if not found_text or not target_text:
+            return False
+        
+        # Convert both to lowercase for case-insensitive matching
         found_lower = found_text.lower()
         target_lower = target_text.lower()
         
-        # Direct match
+        # 1. Check for exact match (ignoring case)
         if found_lower == target_lower:
             return True
         
-        # Check if found text contains target
+        # 2. Check for substring match
         if target_lower in found_lower:
             return True
+            
+        # 3. Allow for common OCR errors and fuzzy matching
+        # Remove non-alphanumeric characters and whitespace
+        found_clean = re.sub(r'[^a-z0-9]', '', found_lower)
+        target_clean = re.sub(r'[^a-z0-9]', '', target_lower)
         
-        # Split into parts and check for partial matches
-        target_parts = target_lower.split()
-        found_parts = found_lower.split()
-        
-        # Check if all target parts appear in the found text parts
-        if all(part in found_parts for part in target_parts):
+        # Handle empty strings after cleaning
+        if not found_clean or not target_clean:
+            return False
+            
+        # Fuzzy matching for similar but not identical text
+        similarity = SequenceMatcher(None, found_clean, target_clean).ratio()
+        if similarity >= fuzzy_threshold:
             return True
-        
-        # If we have multiple words, check for partial matches
-        if len(target_parts) > 1 and len(found_parts) > 0:
-            # Check for any word in target appearing in found text
-            matching_parts = [part for part in target_parts if part in found_lower]
-            if matching_parts:
-                match_ratio = len(matching_parts) / len(target_parts)
-                if self.debug_mode:
-                    print(f"Partial match: '{found_text}' contains {len(matching_parts)}/{len(target_parts)} target words")
-                
-                # Return True if we match at least 70% of the words
-                return match_ratio >= 0.7
-        
+            
         return False
+        
+    def get_all_text_regions(self, screenshot: Union[str, np.ndarray, 'Image.Image'], 
+                           min_confidence: float = 0.3) -> List[Tuple[str, int, int, float]]:
+        """
+        Get all text regions in the screenshot with at least the minimum confidence.
+        
+        Args:
+            screenshot: Path to screenshot image or numpy array
+            min_confidence: Minimum confidence level (0-1)
+            
+        Returns:
+            List of tuples (text, x, y, confidence) for each text region
+        """
+        if not self.has_ocr:
+            return []
+            
+        # Process the image using the same code as in find_text_in_screenshot
+        pil_image = None
+        
+        if isinstance(screenshot, str):
+            if os.path.exists(screenshot):
+                pil_image = Image.open(screenshot)
+            else:
+                return []
+        elif isinstance(screenshot, np.ndarray):
+            np_image = screenshot
+            # Convert BGR to RGB if needed
+            if len(np_image.shape) == 3 and np_image.shape[2] == 3:
+                np_image_rgb = cv2.cvtColor(np_image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(np_image_rgb)
+            else:
+                pil_image = Image.fromarray(np_image)
+        elif HAVE_PIL and isinstance(screenshot, Image.Image):
+            pil_image = screenshot
+        else:
+            return []
+            
+        # Get all text from the image
+        results = []
+        
+        try:
+            # Use multiple OCR configurations for better results
+            ocr_configs = ["", "--psm 6", "--psm 11 --oem 1"]
+            
+            for config in ocr_configs:
+                ocr_data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT, config=config)
+                
+                for i, text in enumerate(ocr_data['text']):
+                    if not text.strip():
+                        continue
+                        
+                    conf = float(ocr_data['conf'][i]) / 100.0
+                    if conf < min_confidence:
+                        continue
+                        
+                    x = ocr_data['left'][i] + ocr_data['width'][i] // 2
+                    y = ocr_data['top'][i] + ocr_data['height'][i] // 2
+                    
+                    results.append((text.strip(), x, y, conf))
+        except Exception as e:
+            if self.debug_mode:
+                print(f"Error getting all text regions: {e}")
+                
+        return results
     
-    def find_template_in_screenshot(self, template_path: str, screenshot: Union[str, np.ndarray],
-                                   threshold: float = 0.7) -> Optional[Tuple[int, int, float]]:
+    def find_template_in_screenshot(self, template_path: str, screenshot: Union[str, np.ndarray], 
+                                    threshold: float = 0.7) -> Optional[Tuple[int, int, float]]:
         """
         Find a template image in a screenshot using template matching.
         
         Args:
             template_path: Path to template image
             screenshot: Path to screenshot image or numpy array
-            threshold: Minimum confidence threshold (0-1)
+            threshold: Minimum confidence level for a match (0-1)
             
         Returns:
             Tuple of (x, y, confidence) for the best match, or None if no matches
         """
         if not self.has_template_matching:
             if self.debug_mode:
-                print("Template matching not available. Install opencv-python.")
+                print("Template matching not available. Install OpenCV.")
             return None
         
         try:
