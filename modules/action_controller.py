@@ -418,13 +418,13 @@ class ActionController:
                                 x, y, confidence = ocr_result
                                 print(f"Text '{text}' found via OCR at ({x}, {y})")
                                 
-                                # Create a visual debug marker showing click target
-                                if self.debug_mode:
-                                    self._create_visual_click_marker(screenshot, x, y, text)
-                                
-                                # Add offset for better button targeting (slightly below text center)
-                                y_offset = int(10)  # Offset 10px down from text center
+                                # Add consistent y_offset for better button targeting
+                                y_offset = int(30)  # Larger offset to better target buttons
                                 print(f"Adding Y offset of {y_offset}px for better button targeting")
+                                
+                                # Create a visual debug marker showing click target WITH OFFSET
+                                if self.debug_mode:
+                                    self._create_visual_click_marker(screenshot, x, y + y_offset, text)
                                 
                                 # Try clicking the target with grid pattern for better accuracy
                                 success = self._perform_grid_click(x, y + y_offset, window_id, action.get('button', 1))
@@ -437,7 +437,17 @@ class ActionController:
                             x, y, confidence = result
                             print(f"Found direct position for '{text}' at ({x}, {y})")
                             print(f"WARNING: Using fallback position - text not verified by OCR")
-                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                            
+                            # Add consistent y_offset for better button targeting
+                            y_offset = int(30)  # Larger offset to better target buttons
+                            print(f"Adding Y offset of {y_offset}px for better button targeting")
+                            
+                            # Create a visual debug marker for fallback position WITH OFFSET
+                            if self.debug_mode and screenshot is not None:
+                                self._create_visual_click_marker(screenshot, x, y + y_offset, text)
+                            
+                            # Use grid click for fallback too
+                            success = self._perform_grid_click(x, y + y_offset, window_id, action.get('button', 1))
                             return success, action_desc
                         else:
                             print(f"Text '{text}' not found, and fixed positions failed")
@@ -471,13 +481,13 @@ class ActionController:
                             x, y, confidence = result
                             print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
                             
-                            # Create a visual debug marker showing click target
-                            if self.debug_mode:
-                                self._create_visual_click_marker(screenshot, x, y, text)
-                            
-                            # Add offset for better button targeting (slightly below text center)
-                            y_offset = int(10)  # Offset 10px down from text center
+                            # Add consistent y_offset for better button targeting
+                            y_offset = int(30)  # Larger offset to better target buttons
                             print(f"Adding Y offset of {y_offset}px for better button targeting")
+                            
+                            # Create a visual debug marker showing click target WITH OFFSET
+                            if self.debug_mode:
+                                self._create_visual_click_marker(screenshot, x, y + y_offset, text)
                             
                             # Try clicking the target with grid pattern for better accuracy
                             success = self._perform_grid_click(x, y + y_offset, window_id, action.get('button', 1))
@@ -487,10 +497,10 @@ class ActionController:
                     except Exception as e:
                         print(f"Error during text processing: {e}")
                         # Last resort fallback for critical UI elements
-                        result = self._find_common_ui_element(text, window_id)
+                        result = self._find_common_ui_element(action.get('text', ''), window_id)
                         if result:
                             x, y, confidence = result
-                            print(f"Using emergency fallback for '{text}' at ({x}, {y})")
+                            print(f"Using emergency fallback for '{action.get('text', '')}' at ({x}, {y})")
                             success = self.input_manager.click(x, y, action.get('button', 1), window_id)
                             return success, action_desc
                         success = False
@@ -842,39 +852,78 @@ class ActionController:
         Returns:
             Whether any click was successful
         """
-        # First, try center point
         if self.debug_mode:
-            print(f"Performing grid click centered at ({center_x}, {center_y})")
+            print(f"Starting multi-strategy click at ({center_x}, {center_y})")
             
-        # First try direct center
-        success = self.input_manager.click(center_x, center_y, button, window_id)
-        if success and not self.debug_mode:
-            return True
-            
-        # If center didn't work or we're debugging, try grid pattern
-        half_size = grid_size // 2
-        for dx in range(-half_size, half_size + 1):
-            for dy in range(-half_size, half_size + 1):
-                # Skip center point as we already tried it
-                if dx == 0 and dy == 0:
-                    continue
-                    
-                # Calculate grid point
-                x = center_x + dx * spacing
-                y = center_y + dy * spacing
-                
-                if self.debug_mode:
-                    print(f"  Grid click at offset ({dx*spacing}, {dy*spacing}) -> ({x}, {y})")
-                    
-                # Try click
-                click_success = self.input_manager.click(x, y, button, window_id)
-                success = success or click_success
-                
-                # Small delay between clicks
-                time.sleep(0.05)
-                
-        return success
+        # Let's try multiple click strategies to ensure the button gets pressed
+        success = False
         
+        # First try: direct click at detected position
+        if self.debug_mode:
+            print("Strategy 1: Direct click at detected position")
+        success = self.input_manager.click(center_x, center_y, button, window_id)
+        
+        # Second try: offset slightly downward (buttons often have text at top)
+        offset_y = 10  # Additional 10 pixels down
+        if self.debug_mode:
+            print(f"Strategy 2: Click offset down {offset_y}px")
+        success = self.input_manager.click(center_x, center_y + offset_y, button, window_id) or success
+        time.sleep(0.2)
+        
+        # Third try: Try a more significant offset (30px)
+        offset_y = 30  # Larger offset if previous attempt failed
+        if not success or self.debug_mode:
+            if self.debug_mode:
+                print(f"Strategy 3: Click with larger offset {offset_y}px")
+            success = self.input_manager.click(center_x, center_y + offset_y, button, window_id) or success
+            time.sleep(0.2)
+        
+        # Fourth try: grid pattern around the original point
+        if not success or self.debug_mode:
+            if self.debug_mode:
+                print("Strategy 4: Grid clicks in small area")
+            # Try 3x3 grid around the point with 5px spacing
+            for dy in [-spacing, 0, spacing]:
+                for dx in [-spacing, 0, spacing]:
+                    # Skip center point (already tried)
+                    if dx == 0 and dy == 0:
+                        continue
+                    success = self.input_manager.click(center_x + dx, center_y + dy, button, window_id) or success
+                    time.sleep(0.1)
+        
+        # Fifth try: grid pattern around the 10px offset point
+        if not success or self.debug_mode:
+            if self.debug_mode:
+                print("Strategy 5: Grid clicks with 10px offset")
+            # Try 3x3 grid around the offset point with 5px spacing
+            offset_y = 10
+            for dy in [-spacing, 0, spacing]:
+                for dx in [-spacing, 0, spacing]:
+                    # Skip center point (already tried)
+                    if dx == 0 and dy == 0:
+                        continue
+                    success = self.input_manager.click(center_x + dx, center_y + offset_y + dy, button, window_id) or success
+                    time.sleep(0.1)
+        
+        # If everything failed, try one last targeted attempt with the 30px offset
+        if not success:
+            if self.debug_mode:
+                print("Strategy 6: Last attempt with 30px offset and increased spacing")
+            offset_y = 30
+            larger_spacing = spacing * 2
+            for dy in [-larger_spacing, 0, larger_spacing]:
+                for dx in [-larger_spacing, 0, larger_spacing]:
+                    success = self.input_manager.click(center_x + dx, center_y + offset_y + dy, button, window_id) or success
+                    time.sleep(0.1)
+        
+        if self.debug_mode:
+            if success:
+                print("Click strategy succeeded!")
+            else:
+                print("All click strategies failed")
+        
+        return success
+    
     def _create_visual_click_marker(self, screenshot, x, y, text, radius=30):
         """
         Create a debug image showing where a click will happen.
@@ -915,9 +964,19 @@ class ActionController:
             cv2.putText(marked, f"Target: {text}", (x+10, y-10), font, 0.5, (0, 255, 0), 2)
             
             # Y-offset target dot (where we're actually clicking)
-            y_offset = y + 10
+            y_offset = y + 30  # Match the 30px offset used in the click code
             cv2.circle(marked, (x, y_offset), 5, (255, 0, 0), -1)
             cv2.putText(marked, "Click", (x+10, y_offset), font, 0.5, (255, 0, 0), 2)
+            
+            # Draw grid pattern indicators
+            spacing = 10
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    if i == 0 and j == 0:
+                        continue  # Skip center point already marked
+                    grid_x = x + (i * spacing)
+                    grid_y = y_offset + (j * spacing)
+                    cv2.circle(marked, (grid_x, grid_y), 2, (255, 0, 0), -1)
             
             # Save the image
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

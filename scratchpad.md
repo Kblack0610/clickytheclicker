@@ -32,6 +32,12 @@ Create a window autoclicker that uses X11's XTest extension to send synthetic mo
 - Multiple window geometry detection methods are needed for reliable operation across different window managers
 - Direct window ID selection is better than trying to click on windows in tiling managers
 - Having a way to list all window IDs is crucial for finding the right window in complex setups
+- When targeting UI elements based on text, add a significant vertical offset (30px) for buttons below text
+- Use grid-based clicking patterns with increasing coverage to handle various button layouts
+- Visual debug markers are essential for troubleshooting click targeting issues
+- XTest ButtonPress/ButtonRelease events DO NOT support direct positioning! Must use MotionNotify first
+- Always use a sequence of: MotionNotify → ButtonPress → ButtonRelease → MotionNotify (to restore position)
+- Multi-strategy clicking (trying different offsets and positions) works better than a single click attempt
 
 ## Implementation Plan: Multiple Cursor Support & Modular Design
 

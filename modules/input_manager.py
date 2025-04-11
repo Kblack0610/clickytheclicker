@@ -155,19 +155,28 @@ class InputManager:
             pointer_data = self.root.query_pointer()
             old_x, old_y = pointer_data.root_x, pointer_data.root_y
             
-            # Send button events directly with coordinates without MotionNotify
-            # This is the key to not moving the cursor
-            xtest.fake_input(self.display, X.ButtonPress, button, x=x_abs, y=y_abs)
-            self.display.sync()
-            time.sleep(0.1)  # Small delay between press and release
-            xtest.fake_input(self.display, X.ButtonRelease, button, x=x_abs, y=y_abs)
+            # FIXED IMPLEMENTATION: 
+            # The previous implementation was incorrect as XTest fake_input doesn't support 
+            # passing x,y coordinates directly to click events
+            
+            # 1. Move the synthetic pointer using XTest (this doesn't move the real cursor)
+            xtest.fake_input(self.display, X.MotionNotify, 0, x=x_abs, y=y_abs)
             self.display.sync()
             
-            # Optional - restore cursor to original position
-            # Don't use MotionNotify here, as it would be visible
-            # Only needed if you observe any cursor movement
+            # 2. Send button events at the current synthetic position
+            xtest.fake_input(self.display, X.ButtonPress, button)
+            self.display.sync()
+            time.sleep(0.1)  # Small delay between press and release
+            xtest.fake_input(self.display, X.ButtonRelease, button)
+            self.display.sync()
+            
+            # 3. Move the synthetic pointer back to original position
+            # This ensures we don't leave the synthetic cursor somewhere unexpected
+            xtest.fake_input(self.display, X.MotionNotify, 0, x=old_x, y=old_y)
+            self.display.sync()
+            
             if self.debug_mode:
-                print(f"Click executed at ({x_abs}, {y_abs})")
+                print(f"Click executed at ({x_abs}, {y_abs}), then restored to ({old_x}, {old_y})")
             
             return True
             
