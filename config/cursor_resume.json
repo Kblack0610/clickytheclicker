@@ -1,0 +1,19 @@
+{
+  "name": "resume_cursor_2",
+  "description": "",
+  "created": "2025-04-10T23:53:09.432379",
+  "modified": "2025-04-10T23:53:09.432379",
+  "interval": 10.0,
+  "activate_window": true,
+  "retry_count": 3,
+  "debug_mode": true,
+  "loop_actions": true,
+  "continuous_mode": false,
+  "actions": [
+    {
+      "type": "click_text",
+      "text": "resume the conversation.",
+      "required": false
+    }
+  ]
+}

@@ -148,16 +148,26 @@ class InputManager:
                 # Use coordinates as given
                 x_abs, y_abs = x, y
             
-            # Move pointer
-            self.root.warp_pointer(x_abs, y_abs)
-            self.display.sync()
+            if self.debug_mode:
+                print(f"Targeting absolute position: ({x_abs}, {y_abs})")
             
-            # Click
-            xtest.fake_input(self.display, X.ButtonPress, button)
+            # IMPORTANT: Save the current mouse position
+            pointer_data = self.root.query_pointer()
+            old_x, old_y = pointer_data.root_x, pointer_data.root_y
+            
+            # Send button events directly with coordinates without MotionNotify
+            # This is the key to not moving the cursor
+            xtest.fake_input(self.display, X.ButtonPress, button, x=x_abs, y=y_abs)
             self.display.sync()
             time.sleep(0.1)  # Small delay between press and release
-            xtest.fake_input(self.display, X.ButtonRelease, button)
+            xtest.fake_input(self.display, X.ButtonRelease, button, x=x_abs, y=y_abs)
             self.display.sync()
+            
+            # Optional - restore cursor to original position
+            # Don't use MotionNotify here, as it would be visible
+            # Only needed if you observe any cursor movement
+            if self.debug_mode:
+                print(f"Click executed at ({x_abs}, {y_abs})")
             
             return True
             

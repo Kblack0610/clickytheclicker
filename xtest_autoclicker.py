@@ -169,15 +169,16 @@ class XTestAutoclicker:
     def send_click_event(self, x, y, button=1):
         """Send a synthetic click event using XTest at absolute coordinates"""
         try:
-            # Move invisible cursor to target position
-            xtest.fake_input(self.display, X.MotionNotify, x=x, y=y)
+            # IMPORTANT: Do NOT use MotionNotify as it moves the actual cursor
+            # Instead, pass coordinates directly to button events
             
             # Simulate mouse down and up (click)
-            xtest.fake_input(self.display, X.ButtonPress, button)
-            xtest.fake_input(self.display, X.ButtonRelease, button)
-            
-            # Make sure events are processed
+            xtest.fake_input(self.display, X.ButtonPress, button, x=x, y=y)
             self.display.sync()
+            time.sleep(0.1)  # Small delay between press and release
+            xtest.fake_input(self.display, X.ButtonRelease, button, x=x, y=y)
+            self.display.sync()
+            
             return True
         except Exception as e:
             print(f"Error sending XTest click event: {e}")

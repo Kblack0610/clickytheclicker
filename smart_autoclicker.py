@@ -248,14 +248,19 @@ class SmartAutoclicker:
     def send_click_event(self, x, y, button=1):
         """Send a synthetic click event using XTest at absolute coordinates without moving the real cursor"""
         try:
-            # Use XTest to create a virtual click at the target position
-            # This should not affect the actual cursor position
-            xtest.fake_input(self.display, X.MotionNotify, x=x, y=y)
-            xtest.fake_input(self.display, X.ButtonPress, button)
-            xtest.fake_input(self.display, X.ButtonRelease, button)
+            # IMPORTANT: Do NOT use MotionNotify as it moves the actual cursor
+            # Instead, pass coordinates directly to button events
             
-            # Make sure events are processed
+            # Simulate mouse down and up (click)
+            xtest.fake_input(self.display, X.ButtonPress, button, x=x, y=y)
             self.display.sync()
+            time.sleep(0.1)  # Small delay between press and release
+            xtest.fake_input(self.display, X.ButtonRelease, button, x=x, y=y)
+            self.display.sync()
+            
+            if self.debug_mode:
+                print(f"Sent synthetic click at ({x}, {y}) without moving cursor")
+            
             return True
         except Exception as e:
             print(f"Error sending XTest click event: {e}")
@@ -716,10 +721,33 @@ class SmartAutoclicker:
                     
                     if self.debug_mode:
                         print(f"Clicking on text '{text}' at position ({coords[0]}, {coords[1]})")
+                        print(f"Window geometry: x={window_x}, y={window_y}")
+                        print(f"Absolute coordinates: ({abs_x}, {abs_y})")
                     else:
                         print(f"Clicking: '{text}'")
-                    return self.send_click_event(abs_x, abs_y)
-                
+                        
+                    # Ensure window is properly activated first
+                    if self.activate_window:
+                        try:
+                            # Force window activation with --sync to ensure it's complete
+                            subprocess.run(["xdotool", "windowactivate", "--sync", str(self.selected_window)], 
+                                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            time.sleep(0.2)  # Give window a moment to properly activate
+                        except subprocess.SubprocessError:
+                            print("Warning: Could not activate window")
+                    
+                    # First attempt with direct click
+                    success = self.send_click_event(abs_x, abs_y)
+                    
+                    # If first attempt fails, try alternative approach - click twice
+                    if not success or self.debug_mode:
+                        print("Trying alternative click method...")
+                        # Try clicking twice with a small delay
+                        success = self.send_click_event(abs_x, abs_y)
+                        time.sleep(0.2)
+                        success = self.send_click_event(abs_x, abs_y) or success
+                    
+                    return success
                 # Not the last attempt?
                 if attempt < max_attempts - 1:
                     if self.debug_mode:
