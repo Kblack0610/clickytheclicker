@@ -417,38 +417,35 @@ class ActionController:
                                 # Text was found by OCR, use those coordinates instead of fixed positions
                                 x, y, confidence = ocr_result
                                 print(f"Text '{text}' found via OCR at ({x}, {y})")
-                                success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                                
+                                # Create a visual debug marker showing click target
+                                if self.debug_mode:
+                                    self._create_visual_click_marker(screenshot, x, y, text)
+                                
+                                # Add offset for better button targeting (slightly below text center)
+                                y_offset = int(10)  # Offset 10px down from text center
+                                print(f"Adding Y offset of {y_offset}px for better button targeting")
+                                
+                                # Try clicking the target with grid pattern for better accuracy
+                                success = self._perform_grid_click(x, y + y_offset, window_id, action.get('button', 1))
                                 return success, action_desc
-                        
-                        # OCR didn't find it, check if we should use fixed positions as last resort
-                        if action.get('allow_fixed_positions', False):
-                            result = self._find_common_ui_element(text, window_id)
-                            if result:
-                                x, y, confidence = result
-                                print(f"Found direct position for '{text}' at ({x}, {y})")
-                                print(f"WARNING: Using fallback position - text not verified by OCR")
-                                success = self.input_manager.click(x, y, action.get('button', 1), window_id)
-                                
-                                # Verify if the click had the expected effect
-                                time.sleep(0.5)  # Wait for UI to update
-                                after_screenshot = self.image_processor.capture_window_screenshot(window_id)
-                                if after_screenshot is not None:
-                                    # Check if anything changed after the click
-                                    if self._screenshots_are_different(screenshot, after_screenshot):
-                                        print(f"UI changed after click, considering successful")
-                                        return True, action_desc
-                                    else:
-                                        print(f"UI didn't change after click, considering failed")
-                                        return False, action_desc
-                                
-                                # If we can't verify, don't assume success
-                                return False, action_desc
+
+                        # OCR didn't find it or couldn't capture screenshot
+                        # Try fixed positions as last resort
+                        result = self._find_common_ui_element(text, window_id)
+                        if result:
+                            x, y, confidence = result
+                            print(f"Found direct position for '{text}' at ({x}, {y})")
+                            print(f"WARNING: Using fallback position - text not verified by OCR")
+                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                            return success, action_desc
                         else:
-                            print(f"Text '{text}' not found, and fixed positions are disabled")
+                            print(f"Text '{text}' not found, and fixed positions failed")
                             return False, action_desc
                     
-                    # Try to take screenshot for OCR
+                    # Standard flow for non-special UI elements
                     try:
+                        # Try to take screenshot for OCR
                         screenshot = self.image_processor.capture_window_screenshot(window_id)
                         if screenshot is None:
                             print("Failed to capture screenshot")
@@ -474,8 +471,16 @@ class ActionController:
                             x, y, confidence = result
                             print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
                             
-                            # Click at the text position
-                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                            # Create a visual debug marker showing click target
+                            if self.debug_mode:
+                                self._create_visual_click_marker(screenshot, x, y, text)
+                            
+                            # Add offset for better button targeting (slightly below text center)
+                            y_offset = int(10)  # Offset 10px down from text center
+                            print(f"Adding Y offset of {y_offset}px for better button targeting")
+                            
+                            # Try clicking the target with grid pattern for better accuracy
+                            success = self._perform_grid_click(x, y + y_offset, window_id, action.get('button', 1))
                         else:
                             print(f"Text '{text}' not found")
                             success = False
@@ -559,12 +564,15 @@ class ActionController:
                     time.sleep(0.5)  # Small delay between retries
             
             except Exception as e:
-                if self.debug_mode:
-                    print(f"Error performing action: {e}")
-                
-                # If we have more retries, continue to next attempt
-                if attempt < retry_count:
-                    time.sleep(0.5)  # Small delay between retries
+                print(f"Error during text processing: {e}")
+                # Last resort fallback for critical UI elements
+                result = self._find_common_ui_element(action.get('text', ''), window_id)
+                if result:
+                    x, y, confidence = result
+                    print(f"Using emergency fallback for '{action.get('text', '')}' at ({x}, {y})")
+                    success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                    return success, action_desc
+                success = False
         
         # If we get here, all attempts failed
         return False, action_desc
@@ -818,3 +826,107 @@ class ActionController:
                 print(f"Error comparing screenshots: {e}")
             # If we can't compare, assume they're the same
             return False
+    
+    def _perform_grid_click(self, center_x, center_y, window_id, button=1, grid_size=3, spacing=5):
+        """
+        Perform a grid of clicks around a central point for better accuracy.
+        
+        Args:
+            center_x: Center X coordinate
+            center_y: Center Y coordinate
+            window_id: Window ID
+            button: Mouse button (1=left, 2=middle, 3=right)
+            grid_size: Grid size (e.g., 3 for 3x3 grid)
+            spacing: Spacing between grid points in pixels
+            
+        Returns:
+            Whether any click was successful
+        """
+        # First, try center point
+        if self.debug_mode:
+            print(f"Performing grid click centered at ({center_x}, {center_y})")
+            
+        # First try direct center
+        success = self.input_manager.click(center_x, center_y, button, window_id)
+        if success and not self.debug_mode:
+            return True
+            
+        # If center didn't work or we're debugging, try grid pattern
+        half_size = grid_size // 2
+        for dx in range(-half_size, half_size + 1):
+            for dy in range(-half_size, half_size + 1):
+                # Skip center point as we already tried it
+                if dx == 0 and dy == 0:
+                    continue
+                    
+                # Calculate grid point
+                x = center_x + dx * spacing
+                y = center_y + dy * spacing
+                
+                if self.debug_mode:
+                    print(f"  Grid click at offset ({dx*spacing}, {dy*spacing}) -> ({x}, {y})")
+                    
+                # Try click
+                click_success = self.input_manager.click(x, y, button, window_id)
+                success = success or click_success
+                
+                # Small delay between clicks
+                time.sleep(0.05)
+                
+        return success
+        
+    def _create_visual_click_marker(self, screenshot, x, y, text, radius=30):
+        """
+        Create a debug image showing where a click will happen.
+        
+        Args:
+            screenshot: Screenshot to mark up
+            x: Click X coordinate
+            y: Click Y coordinate
+            text: Text being clicked
+            radius: Radius of marker circle
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import os
+            
+            # Convert PIL to OpenCV if needed
+            if hasattr(screenshot, 'getdata'):
+                screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            else:
+                screenshot_cv = screenshot.copy()
+                
+            # Create a copy for marking
+            marked = screenshot_cv.copy()
+            
+            # Draw targeting elements
+            # Outer circle
+            cv2.circle(marked, (x, y), radius, (0, 0, 255), 2)
+            # Cross-hairs
+            cv2.line(marked, (x-radius, y), (x+radius, y), (0, 0, 255), 1)
+            cv2.line(marked, (x, y-radius), (x, y+radius), (0, 0, 255), 1)
+            # Center dot
+            cv2.circle(marked, (x, y), 3, (0, 255, 0), -1)
+            
+            # Draw text label with target element
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            cv2.putText(marked, f"Target: {text}", (x+10, y-10), font, 0.5, (0, 255, 0), 2)
+            
+            # Y-offset target dot (where we're actually clicking)
+            y_offset = y + 10
+            cv2.circle(marked, (x, y_offset), 5, (255, 0, 0), -1)
+            cv2.putText(marked, "Click", (x+10, y_offset), font, 0.5, (255, 0, 0), 2)
+            
+            # Save the image
+            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            debug_dir = os.path.join(app_dir, "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            debug_path = os.path.join(debug_dir, f"click_target_{int(time.time())}.png")
+            
+            cv2.imwrite(debug_path, marked)
+            print(f"\n*** Visual click indicator saved to: {debug_path} ***\n")
+            
+        except Exception as e:
+            print(f"Error creating visual click marker: {e}")
