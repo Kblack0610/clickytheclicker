@@ -75,22 +75,34 @@ class ImageProcessor:
             temp_file.close()
             screenshot_path = temp_file.name
             
-            # Capture window using xwd and convert with imagemagick
-            subprocess.run([
-                "xwd", "-silent", "-id", str(window_id), "-out", "/tmp/window_temp.xwd"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Try multiple screenshot capture methods
+            screenshot_methods = [
+                self._capture_with_xwd,
+                self._capture_with_import,
+                self._capture_with_scrot
+            ]
             
-            subprocess.run([
-                "convert", "/tmp/window_temp.xwd", screenshot_path
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            success = False
+            method_used = None
+            for method in screenshot_methods:
+                try:
+                    if method(window_id, screenshot_path):
+                        method_used = method.__name__
+                        if self.debug_mode:
+                            print(f"Successfully captured screenshot using {method_used}")
+                        else:
+                            print(f"Screenshot captured using {method_used}")
+                        success = True
+                        break
+                except Exception as e:
+                    print(f"Screenshot method {method.__name__} failed: {e}")
             
-            # Clean up the temporary xwd file
-            if os.path.exists("/tmp/window_temp.xwd"):
-                os.unlink("/tmp/window_temp.xwd")
-            
+            if not success:
+                print("All screenshot methods failed")
+                return None
+                
             if not os.path.exists(screenshot_path):
-                if self.debug_mode:
-                    print("Screenshot capture failed: output file not created")
+                print("Screenshot capture failed: output file not created")
                 return None
             
             # Prioritize PIL Image for better compatibility with various operations
@@ -102,8 +114,7 @@ class ImageProcessor:
                     os.unlink(screenshot_path)
                     return image_copy
                 except Exception as e:
-                    if self.debug_mode:
-                        print(f"Error loading with PIL: {e}")
+                    print(f"Error loading with PIL: {e}")
                     # Continue to try with OpenCV if PIL fails
             
             # If opencv is available, load the image as a numpy array
@@ -119,8 +130,7 @@ class ImageProcessor:
                         return Image.fromarray(image_rgb)
                     return image
                 except Exception as e:
-                    if self.debug_mode:
-                        print(f"Error loading with OpenCV: {e}")
+                    print(f"Error loading with OpenCV: {e}")
             
             # If we reach here, we couldn't load with PIL or OpenCV, but the file exists
             if os.path.exists(screenshot_path):
@@ -130,10 +140,87 @@ class ImageProcessor:
             return None
             
         except Exception as e:
-            if self.debug_mode:
-                print(f"Error capturing window screenshot: {e}")
+            print(f"Error capturing window screenshot: {e}")
             return None
     
+    def _capture_with_xwd(self, window_id: int, output_path: str) -> bool:
+        """
+        Capture window screenshot using xwd and convert with imagemagick.
+        
+        Args:
+            window_id: X11 window ID
+            output_path: Path to save the screenshot
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Capture window using xwd and convert with imagemagick
+            xwd_path = "/tmp/window_temp.xwd"
+            subprocess.run([
+                "xwd", "-silent", "-id", str(window_id), "-out", xwd_path
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            subprocess.run([
+                "convert", xwd_path, output_path
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Clean up the temporary xwd file
+            if os.path.exists(xwd_path):
+                os.unlink(xwd_path)
+                
+            return os.path.exists(output_path)
+        except Exception as e:
+            if self.debug_mode:
+                print(f"xwd screenshot failed: {e}")
+            return False
+    
+    def _capture_with_import(self, window_id: int, output_path: str) -> bool:
+        """
+        Capture window screenshot using ImageMagick's import tool.
+        
+        Args:
+            window_id: X11 window ID
+            output_path: Path to save the screenshot
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Import directly captures to the desired format
+            subprocess.run([
+                "import", "-window", str(window_id), output_path
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            
+            return os.path.exists(output_path)
+        except Exception as e:
+            if self.debug_mode:
+                print(f"import screenshot failed: {e}")
+            return False
+    
+    def _capture_with_scrot(self, window_id: int, output_path: str) -> bool:
+        """
+        Capture window screenshot using scrot.
+        
+        Args:
+            window_id: X11 window ID
+            output_path: Path to save the screenshot
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Use scrot to capture the window
+            subprocess.run([
+                "scrot", "-u", "-o", output_path
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            
+            return os.path.exists(output_path)
+        except Exception as e:
+            if self.debug_mode:
+                print(f"scrot screenshot failed: {e}")
+            return False
+            
     def find_text_in_screenshot(self, text: str, screenshot: Union[str, np.ndarray, 'Image.Image'], 
                                min_confidence: float = 0.5) -> Optional[Tuple[int, int, float]]:
         """

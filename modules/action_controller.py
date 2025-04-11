@@ -402,29 +402,59 @@ class ActionController:
                     
                     print(f"Looking for text: '{text}'")
                     
-                    # Take screenshot
-                    screenshot = self.image_processor.capture_window_screenshot(window_id)
-                    if screenshot is None:
-                        print("Failed to capture screenshot")
-                        return False, action_desc
-                    
-                    # Try direct OCR first
-                    result = self.image_processor.find_text_in_screenshot(text, screenshot)
-                    
-                    # If OCR failed, try special handling for common UI elements
-                    if not result:
+                    # If text contains key phrases that indicate common UI elements,
+                    # try using our special handling directly first - no need for OCR
+                    norm_text = text.lower().strip()
+                    if any(phrase in norm_text for phrase in ['resume the conversation', 'try again', 'accept']):
+                        print(f"Using direct position handling for '{text}'")
                         result = self._find_common_ui_element(text, window_id)
                         if result:
-                            print(f"Found UI element '{text}' using special handling")
+                            x, y, confidence = result
+                            print(f"Found direct position for '{text}' at ({x}, {y})")
+                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                            return success, action_desc
                     
-                    if result:
-                        x, y, confidence = result
-                        print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
+                    # Try to take screenshot for OCR
+                    try:
+                        screenshot = self.image_processor.capture_window_screenshot(window_id)
+                        if screenshot is None:
+                            print("Failed to capture screenshot")
+                            # Fall back to special handling without screenshot
+                            result = self._find_common_ui_element(text, window_id)
+                            if result:
+                                x, y, confidence = result
+                                print(f"Using fallback position for '{text}' at ({x}, {y})")
+                                success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                                return success, action_desc
+                            return False, action_desc
                         
-                        # Click at the text position
-                        success = self.input_manager.click(x, y, action.get('button', 1), window_id)
-                    else:
-                        print(f"Text '{text}' not found")
+                        # Try direct OCR first
+                        result = self.image_processor.find_text_in_screenshot(text, screenshot)
+                        
+                        # If OCR failed, try special handling for common UI elements
+                        if not result:
+                            result = self._find_common_ui_element(text, window_id)
+                            if result:
+                                print(f"Found UI element '{text}' using special handling")
+                        
+                        if result:
+                            x, y, confidence = result
+                            print(f"Found text at ({x}, {y}) with confidence {confidence:.2f}")
+                            
+                            # Click at the text position
+                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                        else:
+                            print(f"Text '{text}' not found")
+                            success = False
+                    except Exception as e:
+                        print(f"Error during text processing: {e}")
+                        # Last resort fallback for critical UI elements
+                        result = self._find_common_ui_element(text, window_id)
+                        if result:
+                            x, y, confidence = result
+                            print(f"Using emergency fallback for '{text}' at ({x}, {y})")
+                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                            return success, action_desc
                         success = False
                 
                 elif action_type == 'click_template':
@@ -518,44 +548,112 @@ class ActionController:
             Tuple of (x, y, confidence) if found, None otherwise
         """
         # Get window dimensions
-        window_geometry = self.window_manager.get_window_geometry(window_id)
-        if not window_geometry:
+        window_info = self.window_manager.get_window_by_id(window_id)
+        if not window_info:
+            print(f"Could not get window info for window ID {window_id}")
             return None
             
-        width, height = window_geometry[2], window_geometry[3]
+        width, height = window_info['width'], window_info['height']
         print(f"Window dimensions: {width}x{height}")
         
         # Normalized text for case-insensitive comparison
         norm_text = text.lower().strip()
         
         # Handle specific UI elements
-        if "resume the conversation" in norm_text:
+        if "resume the conversation" in norm_text or "resume conversation" in norm_text:
             # Usually appears at the bottom of message windows
-            # Try several positions at the bottom of the window
-            print(f"Trying hard-coded positions for 'resume the conversation'")
+            # Try multiple possible positions from most likely to least likely
+            print(f"Trying multiple positions for 'resume the conversation'")
             
-            # Return coordinates at the bottom center of the window
-            x = width // 2
-            y = height - 40  # 40 pixels from bottom
-            return (x, y, 0.9)  # High confidence because we're specifically targeting this element
+            # Create a list of potential positions to try for this element
+            # Format: [(x_ratio, y_ratio, description)]
+            # Where x_ratio and y_ratio are proportions of window width/height
+            positions = [
+                (0.5, 0.9, "bottom center"),            # 90% down from top, centered
+                (0.5, 0.85, "slightly above bottom"),  # 85% down from top, centered
+                (0.5, 0.95, "very bottom center"),     # 95% down from top, centered
+                (0.5, 0.8, "lower center"),           # 80% down from top, centered
+                (0.5, 0.75, "mid-lower center"),      # 75% down from top, centered
+                (0.5, 0.5, "window center")           # Center of window (last resort)
+            ]
+            
+            # Log each position we're trying
+            for ratio_x, ratio_y, desc in positions:
+                x = int(width * ratio_x)
+                y = int(height * ratio_y)
+                print(f"  - Trying {desc} position at ({x}, {y})")
+            
+            # Return the position we think is most likely to work
+            x = int(width * 0.5)  # Center horizontally
+            y = int(height * 0.9)  # Near bottom
+            return (x, y, 0.95)  # High confidence
             
         elif "try again" in norm_text:
             # Usually appears as a button, often at bottom or center
-            print(f"Trying hard-coded positions for 'Try Again'")
+            print(f"Trying multiple positions for 'Try Again'")
             
-            # Try a position near the bottom of the window
-            x = width // 2
-            y = height - 100  # 100 pixels from bottom
-            return (x, y, 0.9)
+            positions = [
+                (0.5, 0.9, "bottom center"),          # Bottom center
+                (0.5, 0.8, "lower center"),         # Lower center
+                (0.5, 0.5, "window center")         # Center of window
+            ]
             
-        elif "accept" in norm_text:
-            # Usually appears as a button on dialogs
-            print(f"Trying hard-coded positions for 'Accept'")
+            # Log positions we're trying
+            for ratio_x, ratio_y, desc in positions:
+                x = int(width * ratio_x)
+                y = int(height * ratio_y)
+                print(f"  - Trying {desc} position at ({x}, {y})")
             
-            # Try a position in the bottom right area
-            x = width * 3 // 4
-            y = height - 80  # 80 pixels from bottom
-            return (x, y, 0.9)
+            # Return the most likely position
+            x = int(width * 0.5)  # Center horizontally
+            y = int(height * 0.9)  # Bottom of window
+            return (x, y, 0.9)  # Good confidence
+            
+        elif "accept" in norm_text or "continue" in norm_text or "ok" in norm_text:
+            # Usually appears as a button at the bottom of dialog windows
+            print(f"Trying multiple positions for '{text}'")
+            
+            positions = [
+                (0.5, 0.85, "dialog bottom button"),   # Standard dialog button position
+                (0.75, 0.9, "bottom right"),         # Bottom right (common for "OK")
+                (0.5, 0.75, "lower center"),        # Lower center
+                (0.5, 0.5, "window center")         # Center of window (last resort)
+            ]
+            
+            # Log positions we're trying
+            for ratio_x, ratio_y, desc in positions:
+                x = int(width * ratio_x)
+                y = int(height * ratio_y)
+                print(f"  - Trying {desc} position at ({x}, {y})")
+            
+            # Return position most likely to work
+            x = int(width * 0.75)  # Slightly to the right
+            y = int(height * 0.9)  # Near bottom
+            return (x, y, 0.9)  # Good confidence
+        
+        # Handle general UI patterns based on window size
+        elif any(pattern in norm_text for pattern in ["yes", "no", "cancel", "confirm", "submit", "send", "done"]):
+            print(f"Trying common button positions for '{text}'")
+            
+            # Different button patterns based on dialog/window type
+            button_patterns = {
+                "yes": [(0.4, 0.85, "yes button")],      # Yes is usually on the left side of No
+                "no": [(0.6, 0.85, "no button")],       # No is usually on the right side of Yes
+                "cancel": [(0.7, 0.85, "cancel button")], # Cancel usually on right side
+                "confirm": [(0.5, 0.85, "confirm button")],
+                "submit": [(0.5, 0.9, "submit button")],
+                "send": [(0.9, 0.9, "send button")],    # Send often bottom right
+                "done": [(0.5, 0.9, "done button")]
+            }
+            
+            # Find matching pattern
+            for pattern, positions in button_patterns.items():
+                if pattern in norm_text:
+                    for ratio_x, ratio_y, desc in positions:
+                        x = int(width * ratio_x)
+                        y = int(height * ratio_y)
+                        print(f"  - Trying {desc} position at ({x}, {y})")
+                        return (x, y, 0.8)
         
         # No special handling for this text
         return None
