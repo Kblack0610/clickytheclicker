@@ -1,6 +1,6 @@
-# XTest Window Autoclicker
+# Clicky the Clicker
 
-A tool that clicks within specific application windows **without moving your physical mouse cursor**, allowing you to continue working normally while the autoclicker operates independently.
+An X11 autoclicker that clicks within specific application windows **without moving your physical mouse cursor**, allowing you to continue working normally while the autoclicker operates independently.
 
 ## Features
 

@@ -33,7 +33,74 @@ Create a window autoclicker that uses X11's XTest extension to send synthetic mo
 - Direct window ID selection is better than trying to click on windows in tiling managers
 - Having a way to list all window IDs is crucial for finding the right window in complex setups
 
-## Next Steps (for the user)
+## Implementation Plan: Multiple Cursor Support & Modular Design
+
+### 1. Multiple Cursor Approach Using xinput
+
+Linux's xinput utility can be used to create and manage virtual input devices, allowing for:
+
+- Creation of a secondary cursor that doesn't interfere with the main cursor
+- Separation of automation actions from user inputs
+
+#### Implementation Ideas:
+
+```bash
+# Create a virtual pointer device
+VIRTUAL_DEVICE=$(xinput create-master "Virtual Pointer")
+
+# Get the ID of the new pointer
+POINTER_ID=$(xinput list | grep "Virtual Pointer" | grep -oP "id=\K\d+")
+
+# Send events to the virtual pointer
+xinput set-ptr-feedback $POINTER_ID 0 0 0
+xinput --test-xi2 $POINTER_ID  # Monitor events
+
+# Move the virtual pointer
+# This would require writing to the virtual device using low-level X11 APIs
+```
+
+**Challenges:**
+- Requires root permissions or special udev rules
+- Need to map window coordinates correctly
+- May require substantial reworking of the X11 interaction code
+
+### 2. Modular Design Improvements
+
+#### Proposed Module Structure:
+
+1. **Core Modules**
+   - `input_manager.py`: Handle all input operations (clicks, typing)
+   - `window_manager.py`: Handle window detection and focusing
+   - `image_processor.py`: Handle screenshot capture and image recognition
+   - `action_controller.py`: Orchestrate the execution of automation sequences
+
+2. **UI Layer**
+   - `cli.py`: Command line interface
+   - `config_manager.py`: Configuration loading/saving
+
+3. **Test Structure**
+   - Unit tests for each module
+   - Integration tests for common workflows
+   - Mock objects for X11 display to enable testing without actual GUI
+
+## Implementation Tasks
+
+[ ] Research xinput approach in detail
+   - [ ] Test creating virtual input devices
+   - [ ] Determine if permissions can be handled gracefully
+   - [ ] Experiment with sending events to specific windows
+
+[ ] Create modular structure
+   - [ ] Define clear interfaces between modules
+   - [ ] Refactor existing code into modules
+   - [ ] Implement proper dependency injection
+
+[ ] Set up testing framework
+   - [ ] Create mock objects for X11 interactions
+   - [ ] Write initial tests for core functionality
+   - [ ] Implement CI workflow for automated testing
+
+## Original Next Steps (for the user)
 1. Make the scripts executable: 
    ```
    chmod +x xtest_autoclicker.py smart_autoclicker.py install.sh

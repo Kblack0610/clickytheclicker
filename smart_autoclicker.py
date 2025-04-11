@@ -56,7 +56,7 @@ class SmartAutoclicker:
         self.actions = []  # List of automation actions
         self.current_screenshot = None
         self.debug_mode = False
-        self.retry_count = 3  # Number of retries if element not found
+        self.retry_count = 0  # Default: try each action once (0 retries)
         self.activate_window = True
         self.config_file = None
         self.continuous_mode = False  # Flag for continuous mode
@@ -466,7 +466,8 @@ class SmartAutoclicker:
             
             # Try each preprocessing method to find the text
             for method_name, ocr_data in all_ocr_data.items():
-                print(f"\nSearching in {method_name} results:")
+                if self.debug_mode:
+                    print(f"\nSearching in {method_name} results:")
                 
                 # Try exact match first
                 for i, text in enumerate(ocr_data['text']):
@@ -486,7 +487,8 @@ class SmartAutoclicker:
                         center_x = x + w // 2
                         center_y = y + h // 2
                         
-                        print(f"Found exact match with {method_name}: '{text}' at position ({center_x}, {center_y})")
+                        if self.debug_mode:
+                            print(f"Found exact match with {method_name}: '{text}' at position ({center_x}, {center_y})")
                         return (center_x, center_y)
                 
                 # Track best fuzzy match for this method
@@ -505,7 +507,8 @@ class SmartAutoclicker:
                     matching_parts = [part for part in target_parts if part in text_lower]
                     if matching_parts:
                         match_ratio = len(matching_parts) / len(target_parts)
-                        print(f"Partial match: '{text}' contains {len(matching_parts)}/{len(target_parts)} target words")
+                        if self.debug_mode:
+                            print(f"Partial match: '{text}' contains {len(matching_parts)}/{len(target_parts)} target words")
                         
                         if match_ratio > best_ratio:
                             best_ratio = match_ratio
@@ -523,11 +526,13 @@ class SmartAutoclicker:
                     center_x = x + w // 2
                     center_y = y + h // 2
                     
-                    print(f"Found best fuzzy match with {method_name}: '{best_match}' (score: {best_ratio:.2f}) at position ({center_x}, {center_y})")
+                    if self.debug_mode:
+                        print(f"Found best fuzzy match with {method_name}: '{best_match}' (score: {best_ratio:.2f}) at position ({center_x}, {center_y})")
                     return (center_x, center_y)
             
             # If all methods failed, look for any text containing part of the target
-            print("\nNo good match found with any method. Looking for any partial matches...")
+            if self.debug_mode:
+                print("\nNo good match found with any method. Looking for any partial matches...")
             
             # Combine results from all methods
             all_candidates = []
@@ -613,7 +618,8 @@ class SmartAutoclicker:
                 # If we have a reference text position, find the closest match
                 if near_text_coords is not None:
                     text_x, text_y = near_text_coords
-                    print(f"Finding template closest to text at ({text_x}, {text_y})")
+                    if self.debug_mode:
+                        print(f"Finding template closest to text at ({text_x}, {text_y})")
                     
                     # Calculate distance from each match to the text
                     for match in matches:
@@ -626,18 +632,20 @@ class SmartAutoclicker:
                     matches.sort(key=lambda m: m['distance'])
                     
                     best_match = matches[0]
-                    print(f"Found {len(matches)} template matches, selecting closest to text:")
-                    for i, match in enumerate(matches[:min(3, len(matches))]):
-                        print(f"  Match {i+1}: pos={match['position']}, distance={match['distance']:.1f}px, confidence={match['confidence']:.2f}")
+                    if self.debug_mode:
+                        print(f"Found {len(matches)} template matches, selecting closest to text:")
+                        for i, match in enumerate(matches[:min(3, len(matches))]):
+                            print(f"  Match {i+1}: pos={match['position']}, distance={match['distance']:.1f}px, confidence={match['confidence']:.2f}")
                     
-                    print(f"Selected match at {best_match['position']} (distance: {best_match['distance']:.1f}px)")
+                    if self.debug_mode:
+                        print(f"Selected match at {best_match['position']} (distance: {best_match['distance']:.1f}px)")
                     return best_match['position']
                 else:
                     # No text reference, just use the best confidence match
                     matches.sort(key=lambda m: m['confidence'], reverse=True)
                     best_match = matches[0]
                     
-                    if len(matches) > 1:
+                    if self.debug_mode and len(matches) > 1:
                         print(f"Found {len(matches)} template matches, selecting best confidence:")
                         for i, match in enumerate(matches[:min(3, len(matches))]):
                             print(f"  Match {i+1}: pos={match['position']}, confidence={match['confidence']:.2f}")
@@ -690,23 +698,42 @@ class SmartAutoclicker:
                 print("Error: No text specified for click_text action")
                 return False
             
-            # Try to find the text
-            for i in range(self.retry_count):
+            # Get action-specific retry count or use global default
+            retry_count = action.get('retry_count', self.retry_count)
+            # Try to find the text (once initially, then retry up to retry_count times)
+            max_attempts = retry_count + 1  # Initial attempt + retries
+            
+            # Debug vs. normal mode output
+            if self.debug_mode:
+                print(f"Looking for text '{text}' (max attempts: {max_attempts})")
+                
+            for attempt in range(max_attempts):
                 coords = self.find_text_in_screenshot(text, screenshot)
                 if coords:
                     window_x, window_y, _, _ = self.window_geometry
                     abs_x = window_x + coords[0]
                     abs_y = window_y + coords[1]
                     
-                    print(f"Clicking on text '{text}' at position ({coords[0]}, {coords[1]})")
+                    if self.debug_mode:
+                        print(f"Clicking on text '{text}' at position ({coords[0]}, {coords[1]})")
+                    else:
+                        print(f"Clicking: '{text}'")
                     return self.send_click_event(abs_x, abs_y)
                 
-                if i < self.retry_count - 1:
-                    print(f"Text '{text}' not found, retrying in 1 second...")
+                # Not the last attempt?
+                if attempt < max_attempts - 1:
+                    if self.debug_mode:
+                        print(f"Text '{text}' not found, retrying in 1 second... (attempt {attempt+1}/{max_attempts})")
+                    else:
+                        print(f"'{text}' not found, retry {attempt+1}/{max_attempts}")
                     time.sleep(1)
                     screenshot = self.capture_window_screenshot()
             
-            print(f"Error: Could not find text '{text}' after {self.retry_count} attempts")
+            # After all attempts
+            if self.debug_mode:
+                print(f"Error: Could not find text '{text}' after {max_attempts} attempt(s)")
+            else:
+                print(f"Failed to find: '{text}'")
             return False
         
         elif action_type == 'click_template':
@@ -727,26 +754,46 @@ class SmartAutoclicker:
                 if not text_coords:
                     print(f"Warning: Specified text '{near_text}' not found, will find template without text reference")
             
-            # Try to find the template
-            for i in range(self.retry_count):
+            # Get action-specific retry count or use global default
+            retry_count = action.get('retry_count', self.retry_count)
+            # Try to find the template (once initially, then retry up to retry_count times)
+            max_attempts = retry_count + 1  # Initial attempt + retries
+            
+            # Debug vs. normal mode output
+            template_name = os.path.basename(template)
+            if self.debug_mode:
+                print(f"Looking for template '{template_name}' (max attempts: {max_attempts})")
+            
+            for attempt in range(max_attempts):
                 coords = self.find_element_by_template(template, threshold, screenshot, text_coords)
                 if coords:
                     window_x, window_y, _, _ = self.window_geometry
                     abs_x = window_x + coords[0]
                     abs_y = window_y + coords[1]
                     
-                    print(f"Clicking on template '{template}' at position ({coords[0]}, {coords[1]})")
+                    if self.debug_mode:
+                        print(f"Clicking on template '{template_name}' at position ({coords[0]}, {coords[1]})")
+                    else:
+                        print(f"Clicking: '{template_name}'")
                     return self.send_click_event(abs_x, abs_y)
                 
-                if i < self.retry_count - 1:
-                    print(f"Template '{template}' not found, retrying in 1 second...")
+                # Not the last attempt?
+                if attempt < max_attempts - 1:
+                    if self.debug_mode:
+                        print(f"Template '{template_name}' not found, retrying in 1 second... (attempt {attempt+1}/{max_attempts})")
+                    else:
+                        print(f"'{template_name}' not found, retry {attempt+1}/{max_attempts}")
                     time.sleep(1)
                     screenshot = self.capture_window_screenshot()
                     # If we had text coordinates but couldn't find the template, try to find the text again
                     if near_text:
                         text_coords = self.find_text_in_screenshot(near_text, screenshot)
             
-            print(f"Error: Could not find template '{template}' after {self.retry_count} attempts")
+            # After all attempts
+            if self.debug_mode:
+                print(f"Error: Could not find template '{template_name}' after {max_attempts} attempt(s)")
+            else:
+                print(f"Failed to find: '{template_name}'")
             return False
         
         elif action_type == 'click_position':
@@ -758,7 +805,10 @@ class SmartAutoclicker:
             abs_x = window_x + x
             abs_y = window_y + y
             
-            print(f"Clicking at position ({x}, {y})")
+            if self.debug_mode:
+                print(f"Clicking at position ({x}, {y})")
+            else:
+                print(f"Clicking at position")
             return self.send_click_event(abs_x, abs_y)
         
         elif action_type == 'type_text':
@@ -768,13 +818,20 @@ class SmartAutoclicker:
                 print("Error: No text specified for type_text action")
                 return False
             
-            print(f"Typing text: '{text}'")
+            if self.debug_mode:
+                print(f"Typing text: '{text}'")
+            else:
+                # For privacy, don't show full text in non-debug mode
+                print(f"Typing text ({len(text)} chars)")
             return self.send_text(text)
         
         elif action_type == 'wait':
             # Wait for specified duration
             duration = action.get('duration', 1.0)
-            print(f"Waiting for {duration} seconds")
+            if self.debug_mode:
+                print(f"Waiting for {duration} seconds")
+            else:
+                print(f"Waiting...")
             time.sleep(duration)
             return True
         
@@ -803,6 +860,8 @@ class SmartAutoclicker:
             'successful_actions': 0,
             'failed_actions': 0,
             'action_counts': {}, # Track success/fail per action type
+            'successful_details': [],  # Track details of successful actions
+            'failed_details': [],      # Track details of failed actions
             'cycles_completed': 0,
             'start_time': time.time()
         }
@@ -821,12 +880,17 @@ class SmartAutoclicker:
                 success = self.perform_action(action)
                 
                 # Update statistics
+                action_desc = self._get_action_description(action)
                 if success:
                     stats['successful_actions'] += 1
                     stats['action_counts'][action_type]['success'] += 1
+                    # Store details of successful action
+                    stats['successful_details'].append(action_desc)
                 else:
                     stats['failed_actions'] += 1
                     stats['action_counts'][action_type]['fail'] += 1
+                    # Store details of failed action
+                    stats['failed_details'].append(action_desc)
                 
                 # Handle required actions
                 if not success and action.get('required', False):
@@ -842,12 +906,47 @@ class SmartAutoclicker:
                 # Move to next action (cycling through the list if loop is enabled)
                 action_index = (action_index + 1) % len(self.actions)
                 
-                # Check if we've completed all actions and loop is disabled
+                # Check if we've completed all actions
                 if action_index == 0:
                     stats['cycles_completed'] += 1
+                    
+                    # Display summary after each cycle
+                    print(f"\nCompleted cycle {stats['cycles_completed']}")
+                    
+                    # Always show summary (more detailed in debug mode)
+                    if self.debug_mode:
+                        self._display_automation_summary(stats)
+                    else:
+                        # Simplified summary for non-debug mode that still shows which actions succeeded/failed
+                        print(f"Success: {stats['successful_actions']}, Failed: {stats['failed_actions']}")
+                        
+                        # Show successful actions
+                        if stats['successful_details']:
+                            print("Successful:")
+                            # Only show the most recent actions (current cycle)
+                            cycle_length = len(self.actions)
+                            recent_successes = stats['successful_details'][-cycle_length:] if cycle_length > 0 else []
+                            for action_desc in recent_successes:
+                                print(f"  ✓ {action_desc}")
+                        
+                        # Show failed actions
+                        if stats['failed_details']:
+                            print("Failed:")
+                            # Only show the most recent actions (current cycle)
+                            cycle_length = len(self.actions)
+                            recent_failures = stats['failed_details'][-cycle_length:] if cycle_length > 0 else []
+                            for action_desc in recent_failures:
+                                print(f"  ✗ {action_desc}")
+                    
+                    # Check if we should continue or stop
                     if not self.loop_actions:
-                        print("Completed all actions")
+                        print("Automation complete")
                         break
+                    else:
+                        if self.debug_mode:
+                            print("\nStarting next cycle...")
+                        else:
+                            print("Starting next cycle...")
                 
                 # Wait between actions
                 time.sleep(self.click_interval)
@@ -861,6 +960,28 @@ class SmartAutoclicker:
             # Clean up X display connection
             self.display.close()
     
+    def _get_action_description(self, action):
+        """Get a descriptive string for an action"""
+        action_type = action.get('type', 'unknown')
+        
+        if action_type == 'click_text':
+            return f"Click text: '{action.get('text', 'unknown')}'" 
+        elif action_type == 'click_template':
+            template = action.get('template', 'unknown')
+            return f"Click template: '{os.path.basename(template)}'" 
+        elif action_type == 'click_position':
+            return f"Click at position: ({action.get('x', 0)}, {action.get('y', 0)})"
+        elif action_type == 'type_text':
+            text = action.get('text', '')
+            if self.debug_mode:
+                return f"Type text: '{text}'"
+            else:
+                return f"Type text ({len(text)} chars)"
+        elif action_type == 'wait':
+            return f"Wait ({action.get('duration', 1.0)} seconds)" 
+        else:
+            return f"Unknown action: {action_type}"
+            
     def _display_automation_summary(self, stats):
         """Display a summary of automation statistics"""
         run_time = time.time() - stats['start_time']
@@ -873,7 +994,9 @@ class SmartAutoclicker:
         print(f"Successful actions: {stats['successful_actions']}")
         print(f"Failed actions: {stats['failed_actions']}")
         
-        if stats['action_counts']:
+        # In non-debug mode, only show the specific successful/failed actions
+        # In debug mode, also show the type breakdown
+        if stats['action_counts'] and self.debug_mode:
             print("\nAction type breakdown:")
             for action_type, counts in stats['action_counts'].items():
                 success = counts['success']
@@ -882,6 +1005,24 @@ class SmartAutoclicker:
                 if total > 0:
                     success_rate = (success / total) * 100
                     print(f"  {action_type}: {success} successes, {fail} failures ({success_rate:.1f}% success rate)")
+        
+        # Always show successful and failed actions in the summary
+        if stats['successful_details']:
+            print("\nSuccessful actions:")
+            # Take only the most recent cycle's worth of actions
+            cycle_length = len(self.actions)
+            recent_successes = stats['successful_details'][-cycle_length:] if cycle_length > 0 else []
+            for action_desc in recent_successes:
+                print(f"  ✓ {action_desc}")
+                
+        if stats['failed_details']:
+            print("\nFailed actions:")
+            # Take only the most recent cycle's worth of actions
+            cycle_length = len(self.actions)
+            recent_failures = stats['failed_details'][-cycle_length:] if cycle_length > 0 else []
+            for action_desc in recent_failures:
+                print(f"  ✗ {action_desc}")
+                
         print("-"*40)
     
     def get_config_files(self, config_dir=None):
@@ -1010,6 +1151,10 @@ class SmartAutoclicker:
             if 'debug_mode' in config:
                 self.debug_mode = config['debug_mode']
                 print(f"  Debug mode: {self.debug_mode}")
+            
+            if 'retry_count' in config:
+                self.retry_count = config['retry_count']
+                print(f"  Default retry count: {self.retry_count}")
                 
             if 'loop_actions' in config:
                 self.loop_actions = config['loop_actions']
@@ -1135,21 +1280,29 @@ class SmartAutoclicker:
         if choice == "1":
             # Click on text
             text = input("Enter text to find and click: ")
+            retry_input = input("Enter number of retries if text not found initially (default 0): ").strip()
+            retry_count = int(retry_input) if retry_input and retry_input.isdigit() else self.retry_count
+            
             action = {
                 'type': 'click_text',
                 'text': text,
-                'required': input("Is this action required? (y/n): ").lower() == 'y'
+                'required': input("Is this action required? (y/n): ").lower() == 'y',
+                'retry_count': retry_count
             }
             
         elif choice == "2":
             # Click on template
             template = input("Enter path to template image: ")
             threshold = float(input("Enter matching threshold (0.0-1.0, default 0.8): ") or "0.8")
+            retry_input = input("Enter number of retries if template not found initially (default 0): ").strip()
+            retry_count = int(retry_input) if retry_input and retry_input.isdigit() else self.retry_count
+            
             action = {
                 'type': 'click_template',
                 'template': template,
                 'threshold': threshold,
-                'required': input("Is this action required? (y/n): ").lower() == 'y'
+                'required': input("Is this action required? (y/n): ").lower() == 'y',
+                'retry_count': retry_count
             }
             
         elif choice == "3":
@@ -1228,6 +1381,10 @@ class SmartAutoclicker:
         self.click_interval = float(input("Enter time between actions in seconds (default 1.0): ") or "1.0")
         self.debug_mode = input("Enable debug mode? (y/n, default n): ").lower() == 'y'
         self.loop_actions = input("Loop actions? (y/n, default y): ").lower() != 'n'
+        
+        # Configure default retry count
+        retry_input = input("Default number of retries for actions if not found initially (default 0): ").strip()
+        self.retry_count = int(retry_input) if retry_input and retry_input.isdigit() else 0
         
         # Step 3: Create actions
         self.actions = []
