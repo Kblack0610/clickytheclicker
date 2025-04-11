@@ -252,11 +252,17 @@ class SmartAutoclicker:
             # Instead, pass coordinates directly to button events
             
             # Simulate mouse down and up (click)
+            if self.debug_mode:
+                print(f"Sending click at absolute coordinates: ({x}, {y})")
+                
             xtest.fake_input(self.display, X.ButtonPress, button, x=x, y=y)
             self.display.sync()
-            time.sleep(0.1)  # Small delay between press and release
+            time.sleep(0.15)  # Longer delay between press and release
             xtest.fake_input(self.display, X.ButtonRelease, button, x=x, y=y)
             self.display.sync()
+            
+            # Additional time for processing
+            time.sleep(0.1)
             
             if self.debug_mode:
                 print(f"Sent synthetic click at ({x}, {y}) without moving cursor")
@@ -265,7 +271,7 @@ class SmartAutoclicker:
         except Exception as e:
             print(f"Error sending XTest click event: {e}")
             return False
-    
+            
     def send_key_event(self, keycode):
         """Send a synthetic keyboard event using XTest"""
         try:
@@ -367,9 +373,13 @@ class SmartAutoclicker:
                 return None
         
         try:
-            # Save original image for tesseract processing
+            # Save original image for tesseract processing and debugging
             temp_file = "/tmp/smart_autoclicker_temp.png"
+            debug_file = "/tmp/smart_autoclicker_debug.png"
             screenshot.save(temp_file)
+            
+            # Make a copy for debug visualization
+            debug_img = screenshot.copy()
             
             # Try different preprocessing techniques to improve OCR
             preprocessing_methods = ["default", "threshold", "adaptive", "contrast"]
@@ -392,190 +402,156 @@ class SmartAutoclicker:
                         ocr_data = pytesseract.image_to_data(processed_img, output_type=pytesseract.Output.DICT)
                     
                     all_ocr_data[method] = ocr_data
-                    print(f"\nProcessing using {method} preprocessing:")
+                    if self.debug_mode:
+                        print(f"\nProcessing using {method} preprocessing:")
                 except Exception as e:
-                    print(f"Error with {method} preprocessing: {e}")
+                    if self.debug_mode:
+                        print(f"Error with {method} preprocessing: {e}")
                     continue
             
             # Combine results from all preprocessing methods
-            print("\n--- All text found in window ---")
-            print(f"Target text: '{target_text}'")
-            print(f"Attempted preprocessing methods: {', '.join(all_ocr_data.keys())}")
-            print("\nText found with different preprocessing methods:")
+            if self.debug_mode:
+                print("\n--- All text found in window ---")
+                print(f"Target text: '{target_text}'")
+                print(f"Attempted preprocessing methods: {', '.join(all_ocr_data.keys())}")
+                print("\nText found with different preprocessing methods:")
             
-            # Print results from each method
-            found_any_text = False
-            all_found_text = set()
+            # Normalize target text for better matching
+            normalized_target = target_text.lower().strip()
             
-            for method, ocr_data in all_ocr_data.items():
-                non_empty_text = [text for i, text in enumerate(ocr_data['text']) if text.strip()]
-                if non_empty_text:
-                    found_any_text = True
-                    print(f"\n[Method: {method}]")
-                    for i, text in enumerate(ocr_data['text']):
-                        if text.strip():  # Only show non-empty text
-                            conf = ocr_data['conf'][i]
-                            x = ocr_data['left'][i]
-                            y = ocr_data['top'][i]
-                            all_found_text.add(text.strip())
-                            print(f"  Text: '{text}' (confidence: {conf}) at ({x}, {y})")
+            # Find exact matches
+            all_candidates = []
             
-            if not found_any_text:
-                print("No text found with any preprocessing method!")
-                print("Possible issues:")
-                print("  - Text may be too small or low contrast")
-                print("  - Window might be obscured or minimized")
-                print("  - OCR settings may need adjustment")
-            else:
-                print("\nAll unique text found (across all methods):")
-                for text in sorted(all_found_text):
-                    print(f"  '{text}'")
-            
-            print("--- End of found text ---\n")
-            
-            # Convert target text to lowercase for case-insensitive matching
-            target_text = target_text.lower()
-            target_parts = target_text.split()
-            print(f"Searching for: '{target_text}' (parts: {target_parts})")
-            
-            # Try without preprocessing first with additional OCR config
-            try:
-                # Add a custom OCR config specifically for hyperlinks and special formatting
-                custom_config = r'--oem 3 --psm 11 -c preserve_interword_spaces=1'
-                hyperlink_ocr = pytesseract.image_to_data(
-                    screenshot, 
-                    output_type=pytesseract.Output.DICT,
-                    config=custom_config
-                )
-                
-                print("\nAdditional OCR pass with custom config for hyperlinks:")
-                for i, text in enumerate(hyperlink_ocr['text']):
-                    if text.strip():  # Only show non-empty text
-                        conf = hyperlink_ocr['conf'][i]
-                        print(f"  Text: '{text}' (confidence: {conf})")
-                        
-                        # Direct check for hyperlink text
-                        if target_text.lower() in text.lower():
-                            x = hyperlink_ocr['left'][i]
-                            y = hyperlink_ocr['top'][i]
-                            w = hyperlink_ocr['width'][i] if hyperlink_ocr['width'][i] > 0 else 50
-                            h = hyperlink_ocr['height'][i] if hyperlink_ocr['height'][i] > 0 else 20
-                            center_x = x + w // 2
-                            center_y = y + h // 2
-                            print(f"Found hyperlink text match: '{text}' at position ({center_x}, {center_y})")
-                            return (center_x, center_y)
-                            
-                all_ocr_data['hyperlink'] = hyperlink_ocr
-            except Exception as e:
-                print(f"Error with hyperlink OCR: {e}")
-            
-            # Try each preprocessing method to find the text
+            # First try exact matches
             for method_name, ocr_data in all_ocr_data.items():
-                if self.debug_mode:
-                    print(f"\nSearching in {method_name} results:")
+                texts = ocr_data.get('text', [])
                 
-                # Try exact match first
-                for i, text in enumerate(ocr_data['text']):
-                    if not text.strip():
+                # Look for exact matches
+                for i, text in enumerate(texts):
+                    # Skip empty results
+                    if not text or str(text).strip() == '':
                         continue
                     
-                    # Try exact match
-                    text_lower = text.lower()
-                    if target_text in text_lower:
-                        # Get coordinates from OCR data
+                    # Normalize detected text
+                    normalized_text = text.lower().strip()
+                    
+                    # Check for exact or close match
+                    if normalized_text == normalized_target:
+                        # Get bounding box and center
                         x = ocr_data['left'][i]
                         y = ocr_data['top'][i]
-                        w = ocr_data['width'][i] if ocr_data['width'][i] > 0 else 50  # Fallback width
-                        h = ocr_data['height'][i] if ocr_data['height'][i] > 0 else 20  # Fallback height
+                        w = ocr_data['width'][i]
+                        h = ocr_data['height'][i]
                         
-                        # Calculate center of the text
+                        # Calculate center of the text box
                         center_x = x + w // 2
                         center_y = y + h // 2
                         
-                        if self.debug_mode:
-                            print(f"Found exact match with {method_name}: '{text}' at position ({center_x}, {center_y})")
-                        return (center_x, center_y)
-                
-                # Track best fuzzy match for this method
-                best_match = None
-                best_ratio = 0.7  # Minimum threshold for fuzzy match
-                best_i = -1
-                
-                # If exact match fails, try partial matching
-                for i, text in enumerate(ocr_data['text']):
-                    if not text.strip():
-                        continue
+                        # For UI elements like buttons, aim slightly below the text
+                        # as many buttons have text in the upper portion
+                        click_y = center_y + int(h * 0.2)  # Aim 20% below center
                         
-                    text_lower = text.lower()
-                    
-                    # Check for partial matches (any word in target appears in text)
-                    matching_parts = [part for part in target_parts if part in text_lower]
-                    if matching_parts:
-                        match_ratio = len(matching_parts) / len(target_parts)
-                        if self.debug_mode:
-                            print(f"Partial match: '{text}' contains {len(matching_parts)}/{len(target_parts)} target words")
+                        candidate = {
+                            'text': text,
+                            'method': method_name,
+                            'x': center_x,
+                            'y': click_y,
+                            'bbox': (x, y, w, h),
+                            'conf': ocr_data['conf'][i] if 'conf' in ocr_data else 0,
+                            'exact_match': True
+                        }
+                        all_candidates.append(candidate)
                         
-                        if match_ratio > best_ratio:
-                            best_ratio = match_ratio
-                            best_match = text
-                            best_i = i
-                
-                if best_match:
-                    # Get coordinates from OCR data
-                    x = ocr_data['left'][best_i]
-                    y = ocr_data['top'][best_i]
-                    w = ocr_data['width'][best_i] if ocr_data['width'][best_i] > 0 else 50
-                    h = ocr_data['height'][best_i] if ocr_data['height'][best_i] > 0 else 20
-                    
-                    # Calculate center of the text
-                    center_x = x + w // 2
-                    center_y = y + h // 2
-                    
-                    if self.debug_mode:
-                        print(f"Found best fuzzy match with {method_name}: '{best_match}' (score: {best_ratio:.2f}) at position ({center_x}, {center_y})")
-                    return (center_x, center_y)
+                        if self.debug_mode:
+                            print(f"Exact match: '{text}' at ({center_x}, {click_y}), method: {method_name}")
             
-            # If all methods failed, look for any text containing part of the target
-            if self.debug_mode:
-                print("\nNo good match found with any method. Looking for any partial matches...")
-            
-            # Combine results from all methods
-            all_candidates = []
-            for method_name, ocr_data in all_ocr_data.items():
-                for i, text in enumerate(ocr_data['text']):
-                    if not text.strip():
-                        continue
+            # If no exact matches, look for partial matches
+            if not all_candidates:
+                for method_name, ocr_data in all_ocr_data.items():
+                    texts = ocr_data.get('text', [])
                     
-                    text_lower = text.lower()
-                    for part in target_parts:
-                        if len(part) > 3 and part in text_lower:  # Only match on meaningful parts
+                    # Fuzzy matching - look for target text within detected text
+                    for i, text in enumerate(texts):
+                        # Skip empty results
+                        if not text or str(text).strip() == '':
+                            continue
+                        
+                        # Normalize detected text
+                        normalized_text = text.lower().strip()
+                        
+                        # Check if target is part of detected text or vice versa
+                        if normalized_target in normalized_text or normalized_text in normalized_target:
+                            # Get bounding box and center
                             x = ocr_data['left'][i]
                             y = ocr_data['top'][i]
-                            w = ocr_data['width'][i] if ocr_data['width'][i] > 0 else 50
-                            h = ocr_data['height'][i] if ocr_data['height'][i] > 0 else 20
+                            w = ocr_data['width'][i]
+                            h = ocr_data['height'][i]
+                            
+                            # Calculate center of the text box with offset for buttons
                             center_x = x + w // 2
-                            center_y = y + h // 2
+                            click_y = y + h // 2 + int(h * 0.2)  # Aim 20% below center for UI elements
                             
                             candidate = {
                                 'text': text,
-                                'part': part,
+                                'match_type': 'contains',
                                 'method': method_name,
                                 'x': center_x,
-                                'y': center_y
+                                'y': click_y,
+                                'bbox': (x, y, w, h),
+                                'conf': ocr_data['conf'][i] if 'conf' in ocr_data else 0,
+                                'exact_match': False
                             }
                             all_candidates.append(candidate)
+                            
+                            if self.debug_mode:
+                                if normalized_target in normalized_text:
+                                    print(f"Partial match: '{text}' contains '{target_text}' at ({center_x}, {click_y})")
+                                else:
+                                    print(f"Partial match: '{text}' is part of '{target_text}' at ({center_x}, {click_y})")
             
             if all_candidates:
-                # Pick the first candidate
+                # Sort by exact match first, then by confidence
+                all_candidates.sort(key=lambda c: (-1 if c['exact_match'] else 0, c.get('conf', 0)), reverse=True)
+                
+                # Get best candidate
                 best_candidate = all_candidates[0]
-                print(f"Using fallback: Found '{best_candidate['text']}' containing '{best_candidate['part']}'")
-                print(f"Position: ({best_candidate['x']}, {best_candidate['y']}), Method: {best_candidate['method']}")
+                
+                # Draw bounding box on debug image for visualization
+                if self.debug_mode:
+                    # Convert PIL to OpenCV
+                    debug_cv = cv2.cvtColor(np.array(debug_img), cv2.COLOR_RGB2BGR)
+                    
+                    # Get bbox
+                    x, y, w, h = best_candidate['bbox']
+                    
+                    # Draw rectangle around text
+                    cv2.rectangle(debug_cv, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    
+                    # Draw click point
+                    cv2.circle(debug_cv, (best_candidate['x'], best_candidate['y']), 5, (0, 0, 255), -1)
+                    
+                    # Add text label
+                    cv2.putText(debug_cv, best_candidate['text'], (x, y-5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    
+                    # Save debug image
+                    cv2.imwrite(debug_file, debug_cv)
+                    print(f"Debug image saved to {debug_file}")
+                
+                if self.debug_mode:
+                    print(f"\nBest match: '{best_candidate['text']}' with method {best_candidate['method']}")
+                    print(f"Click position: ({best_candidate['x']}, {best_candidate['y']})")
+                    
                 return (best_candidate['x'], best_candidate['y'])
             
-            print(f"Text '{target_text}' not found in window (neither exact nor fuzzy match)")
+            if self.debug_mode:
+                print(f"Text '{target_text}' not found in window (neither exact nor fuzzy match)")
             return None
         except Exception as e:
-            print(f"Error finding text: {e}")
+            if self.debug_mode:
+                print(f"Error finding text: {e}")
+                import traceback
+                traceback.print_exc()
             return None
     
     def find_element_by_template(self, template_path, threshold=0.8, screenshot=None, near_text_coords=None):
@@ -725,27 +701,32 @@ class SmartAutoclicker:
                         print(f"Absolute coordinates: ({abs_x}, {abs_y})")
                     else:
                         print(f"Clicking: '{text}'")
-                        
-                    # Ensure window is properly activated first
-                    if self.activate_window:
-                        try:
-                            # Force window activation with --sync to ensure it's complete
-                            subprocess.run(["xdotool", "windowactivate", "--sync", str(self.selected_window)], 
-                                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            time.sleep(0.2)  # Give window a moment to properly activate
-                        except subprocess.SubprocessError:
-                            print("Warning: Could not activate window")
                     
-                    # First attempt with direct click
+                    # Let's try multiple click strategies to ensure the button gets pressed
+                    success = False
+                    
+                    # First try: direct position
+                    if self.debug_mode:
+                        print("Attempt 1: Direct click at detected position")
                     success = self.send_click_event(abs_x, abs_y)
                     
-                    # If first attempt fails, try alternative approach - click twice
                     if not success or self.debug_mode:
-                        print("Trying alternative click method...")
-                        # Try clicking twice with a small delay
-                        success = self.send_click_event(abs_x, abs_y)
-                        time.sleep(0.2)
-                        success = self.send_click_event(abs_x, abs_y) or success
+                        # Second try: offset slightly downward (buttons often have text at top)
+                        offset_y = 10  # Additional 10 pixels down
+                        if self.debug_mode:
+                            print(f"Attempt 2: Click offset down {offset_y}px")
+                        success = self.send_click_event(abs_x, abs_y + offset_y) or success
+                        time.sleep(0.3)
+                    
+                    if not success or self.debug_mode:
+                        # Third try: small area around the center point with multiple clicks
+                        if self.debug_mode:
+                            print("Attempt 3: Multiple clicks in small area")
+                        # Try clicking in small grid around the point (3x3 grid with 5px spacing)
+                        for dx in [-5, 0, 5]:
+                            for dy in [-5, 0, 5]:
+                                success = self.send_click_event(abs_x + dx, abs_y + dy) or success
+                                time.sleep(0.1)
                     
                     return success
                 # Not the last attempt?
@@ -1045,7 +1026,7 @@ class SmartAutoclicker:
                 
         if stats['failed_details']:
             print("\nFailed actions:")
-            # Take only the most recent cycle's worth of actions
+            # Take only the most recent actions (current cycle)
             cycle_length = len(self.actions)
             recent_failures = stats['failed_details'][-cycle_length:] if cycle_length > 0 else []
             for action_desc in recent_failures:
