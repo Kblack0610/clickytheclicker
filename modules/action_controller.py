@@ -407,12 +407,45 @@ class ActionController:
                     norm_text = text.lower().strip()
                     if any(phrase in norm_text for phrase in ['resume the conversation', 'try again', 'accept']):
                         print(f"Using direct position handling for '{text}'")
-                        result = self._find_common_ui_element(text, window_id)
-                        if result:
-                            x, y, confidence = result
-                            print(f"Found direct position for '{text}' at ({x}, {y})")
-                            success = self.input_manager.click(x, y, action.get('button', 1), window_id)
-                            return success, action_desc
+                        
+                        # First, take a screenshot to verify if the text is present via OCR
+                        screenshot = self.image_processor.capture_window_screenshot(window_id)
+                        if screenshot is not None:
+                            # Try to find the text using OCR first
+                            ocr_result = self.image_processor.find_text_in_screenshot(text, screenshot)
+                            if ocr_result:
+                                # Text was found by OCR, use those coordinates instead of fixed positions
+                                x, y, confidence = ocr_result
+                                print(f"Text '{text}' found via OCR at ({x}, {y})")
+                                success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                                return success, action_desc
+                        
+                        # OCR didn't find it, check if we should use fixed positions as last resort
+                        if action.get('allow_fixed_positions', False):
+                            result = self._find_common_ui_element(text, window_id)
+                            if result:
+                                x, y, confidence = result
+                                print(f"Found direct position for '{text}' at ({x}, {y})")
+                                print(f"WARNING: Using fallback position - text not verified by OCR")
+                                success = self.input_manager.click(x, y, action.get('button', 1), window_id)
+                                
+                                # Verify if the click had the expected effect
+                                time.sleep(0.5)  # Wait for UI to update
+                                after_screenshot = self.image_processor.capture_window_screenshot(window_id)
+                                if after_screenshot is not None:
+                                    # Check if anything changed after the click
+                                    if self._screenshots_are_different(screenshot, after_screenshot):
+                                        print(f"UI changed after click, considering successful")
+                                        return True, action_desc
+                                    else:
+                                        print(f"UI didn't change after click, considering failed")
+                                        return False, action_desc
+                                
+                                # If we can't verify, don't assume success
+                                return False, action_desc
+                        else:
+                            print(f"Text '{text}' not found, and fixed positions are disabled")
+                            return False, action_desc
                     
                     # Try to take screenshot for OCR
                     try:
@@ -746,3 +779,42 @@ class ActionController:
         self.input_manager.cleanup()
         self.window_manager.cleanup()
         self.image_processor.cleanup()
+    
+    def _screenshots_are_different(self, screenshot1, screenshot2, threshold=0.02):
+        """
+        Compare two screenshots to see if they're significantly different.
+        
+        Args:
+            screenshot1: First screenshot
+            screenshot2: Second screenshot
+            threshold: Difference threshold (0-1)
+            
+        Returns:
+            Whether the screenshots are different
+        """
+        try:
+            # Convert to numpy arrays if they're PIL images
+            if hasattr(screenshot1, 'getdata') and hasattr(screenshot2, 'getdata'):
+                import numpy as np
+                screenshot1 = np.array(screenshot1)
+                screenshot2 = np.array(screenshot2)
+            
+            # Check if dimensions match
+            if screenshot1.shape != screenshot2.shape:
+                return True  # Different dimensions means they're different
+            
+            # Calculate difference
+            import numpy as np
+            diff = np.abs(screenshot1.astype(np.float32) - screenshot2.astype(np.float32))
+            diff_ratio = np.mean(diff) / 255.0  # Normalize to 0-1 range
+            
+            if self.debug_mode:
+                print(f"Screenshot difference: {diff_ratio:.4f} (threshold: {threshold})")
+            
+            return diff_ratio > threshold
+            
+        except Exception as e:
+            if self.debug_mode:
+                print(f"Error comparing screenshots: {e}")
+            # If we can't compare, assume they're the same
+            return False

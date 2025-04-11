@@ -690,61 +690,112 @@ class SmartAutoclicker:
                 
             for attempt in range(max_attempts):
                 coords = self.find_text_in_screenshot(text, screenshot)
-                if coords:
-                    window_x, window_y, _, _ = self.window_geometry
-                    abs_x = window_x + coords[0]
-                    abs_y = window_y + coords[1]
+                
+                # If text is not found, check if we should try direct position handling
+                if not coords:
+                    # Check if this is a fallback attempt with direct positions
+                    direct_positions = action.get('direct_positions', False)
                     
-                    if self.debug_mode:
-                        print(f"Clicking on text '{text}' at position ({coords[0]}, {coords[1]})")
-                        print(f"Window geometry: x={window_x}, y={window_y}")
-                        print(f"Absolute coordinates: ({abs_x}, {abs_y})")
+                    if direct_positions and self.window_geometry:
+                        # This is a debug/logging statement from the logs
+                        print(f"Using direct position handling for '{text}'")
+                        x, y, width, height = self.window_geometry
+                        print(f"Window dimensions: {width}x{height}")
+                        
+                        # IMPORTANT - THIS SHOULD NOT RETURN TRUE IF TEXT WASN'T FOUND
+                        # When text isn't found on screen, direct position attempts should not count as success
+                        print(f"Text '{text}' not found in window. Direct position handling will not be used.")
+                        return False
                     else:
-                        print(f"Clicking: '{text}'")
-                    
-                    # Let's try multiple click strategies to ensure the button gets pressed
-                    success = False
-                    
-                    # First try: direct position
+                        # Not the last attempt?
+                        if attempt < max_attempts - 1:
+                            if self.debug_mode:
+                                print(f"Text '{text}' not found, retrying in 1 second... (attempt {attempt+1}/{max_attempts})")
+                            else:
+                                print(f"'{text}' not found, retry {attempt+1}/{max_attempts}")
+                            time.sleep(1)
+                            screenshot = self.capture_window_screenshot()
+                            continue
+                        else:
+                            # After all attempts
+                            if self.debug_mode:
+                                print(f"Error: Could not find text '{text}' after {max_attempts} attempt(s)")
+                            else:
+                                print(f"Failed to find: '{text}'")
+                            return False
+                
+                window_x, window_y, _, _ = self.window_geometry
+                abs_x = window_x + coords[0]
+                abs_y = window_y + coords[1]
+                
+                if self.debug_mode:
+                    print(f"Clicking on text '{text}' at position ({coords[0]}, {coords[1]})")
+                    print(f"Window geometry: x={window_x}, y={window_y}")
+                    print(f"Absolute coordinates: ({abs_x}, {abs_y})")
+                else:
+                    print(f"Clicking: '{text}'")
+                
+                # Let's try multiple click strategies to ensure the button gets pressed
+                success = False
+                
+                # First try: direct position
+                if self.debug_mode:
+                    print("Attempt 1: Direct click at detected position")
+                success = self.send_click_event(abs_x, abs_y)
+                
+                if not success or self.debug_mode:
+                    # Second try: offset slightly downward (buttons often have text at top)
+                    offset_y = 10  # Additional 10 pixels down
                     if self.debug_mode:
-                        print("Attempt 1: Direct click at detected position")
-                    success = self.send_click_event(abs_x, abs_y)
-                    
-                    if not success or self.debug_mode:
-                        # Second try: offset slightly downward (buttons often have text at top)
-                        offset_y = 10  # Additional 10 pixels down
-                        if self.debug_mode:
-                            print(f"Attempt 2: Click offset down {offset_y}px")
-                        success = self.send_click_event(abs_x, abs_y + offset_y) or success
-                        time.sleep(0.3)
-                    
-                    if not success or self.debug_mode:
-                        # Third try: small area around the center point with multiple clicks
-                        if self.debug_mode:
-                            print("Attempt 3: Multiple clicks in small area")
-                        # Try clicking in small grid around the point (3x3 grid with 5px spacing)
-                        for dx in [-5, 0, 5]:
-                            for dy in [-5, 0, 5]:
-                                success = self.send_click_event(abs_x + dx, abs_y + dy) or success
-                                time.sleep(0.1)
-                    
-                    return success
-                # Not the last attempt?
-                if attempt < max_attempts - 1:
+                        print(f"Attempt 2: Click offset down {offset_y}px")
+                    success = self.send_click_event(abs_x, abs_y + offset_y) or success
+                    time.sleep(0.3)
+                
+                if not success or self.debug_mode:
+                    # Third try: small area around the center point with multiple clicks
                     if self.debug_mode:
-                        print(f"Text '{text}' not found, retrying in 1 second... (attempt {attempt+1}/{max_attempts})")
+                        print("Attempt 3: Multiple clicks in small area")
+                    # Try clicking in small grid around the point (3x3 grid with 5px spacing)
+                    for dx in [-5, 0, 5]:
+                        for dy in [-5, 0, 5]:
+                            success = self.send_click_event(abs_x + dx, abs_y + dy) or success
+                            time.sleep(0.1)
+                
+                # VERIFY THE CLICK HAD THE EXPECTED EFFECT
+                time.sleep(0.5)  # Wait for UI to update
+                if self.debug_mode:
+                    print("Verifying click effect...")
+                
+                # Take a new screenshot to verify the UI changed
+                verification_screenshot = self.capture_window_screenshot()
+                if verification_screenshot:
+                    # Check if the clicked text is no longer present, which would indicate success
+                    verification_coords = self.find_text_in_screenshot(text, verification_screenshot)
+                    
+                    if verification_coords:
+                        # Text still found - could mean the click didn't have the expected effect
+                        if self.debug_mode:
+                            print(f"Warning: Text '{text}' still found after clicking. The click may not have had the expected effect.")
+                            
+                        # Calculate distance between original and verification positions
+                        original_x, original_y = coords
+                        verify_x, verify_y = verification_coords
+                        distance = ((original_x - verify_x)**2 + (original_y - verify_y)**2)**0.5
+                        
+                        if distance < 5:  # If positions are very close, text probably didn't change
+                            if self.debug_mode:
+                                print(f"Text position barely changed ({distance:.1f}px). Click likely had no effect.")
+                            success = False
+                        else:
+                            if self.debug_mode:
+                                print(f"Text position changed significantly ({distance:.1f}px). UI may have updated.")
                     else:
-                        print(f"'{text}' not found, retry {attempt+1}/{max_attempts}")
-                    time.sleep(1)
-                    screenshot = self.capture_window_screenshot()
-            
-            # After all attempts
-            if self.debug_mode:
-                print(f"Error: Could not find text '{text}' after {max_attempts} attempt(s)")
-            else:
-                print(f"Failed to find: '{text}'")
-            return False
-        
+                        # Text no longer found - this usually indicates the click worked!
+                        if self.debug_mode:
+                            print(f"Text '{text}' no longer found after clicking. Click appears successful!")
+                        success = True
+                
+                return success
         elif action_type == 'click_template':
             # Find and click template
             template = action.get('template', '')
@@ -850,124 +901,96 @@ class SmartAutoclicker:
     
     def run_automation(self):
         """Run the automation sequence"""
+        if not self.actions:
+            print("No actions defined. Please set up actions first.")
+            return
+        
         if not self.selected_window:
             print("No window selected. Please select a window first.")
             return
-            
-        if not self.actions:
-            print("No actions defined. Please add at least one action.")
-            return
-            
-        print(f"Starting automation with {len(self.actions)} actions")
-        print("Press Ctrl+C to stop")
         
         self.is_running = True
-        action_index = 0
-        
-        # Track statistics
-        stats = {
-            'successful_actions': 0,
-            'failed_actions': 0,
-            'action_counts': {}, # Track success/fail per action type
-            'successful_details': [],  # Track details of successful actions
-            'failed_details': [],      # Track details of failed actions
-            'cycles_completed': 0,
-            'start_time': time.time()
-        }
+        print(f"\nRunning automation on window: {self.get_window_name(self.selected_window)}")
         
         try:
+            cycle = 0
+            stats = {
+                'total': 0,
+                'successful': 0,
+                'failed': 0,
+                'failed_details': []
+            }
+            
+            # Temporary storage for the last time we saw each action succeed
+            # This helps track which actions are still active/available
+            action_last_seen = {i: 0 for i in range(len(self.actions))}
+            
             while self.is_running:
-                # Get next action to perform
-                action = self.actions[action_index]
-                action_type = action.get('type', 'unknown')
+                cycle += 1
+                print(f"\n--- Cycle {cycle} ---")
                 
-                # Initialize action type stats if needed
-                if action_type not in stats['action_counts']:
-                    stats['action_counts'][action_type] = {'success': 0, 'fail': 0}
-                
-                # Perform the action
-                success = self.perform_action(action)
-                
-                # Update statistics
-                action_desc = self._get_action_description(action)
-                if success:
-                    stats['successful_actions'] += 1
-                    stats['action_counts'][action_type]['success'] += 1
-                    # Store details of successful action
-                    stats['successful_details'].append(action_desc)
-                else:
-                    stats['failed_actions'] += 1
-                    stats['action_counts'][action_type]['fail'] += 1
-                    # Store details of failed action
-                    stats['failed_details'].append(action_desc)
-                
-                # Handle required actions
-                if not success and action.get('required', False):
-                    if self.continuous_mode:
-                        print(f"Required action failed, will retry in 2 seconds (continuous mode)")
-                        time.sleep(2)
-                        # Stay on the same action index to retry
-                        continue
-                    else:
-                        print(f"Required action failed, stopping automation")
-                        break
-                
-                # Move to next action (cycling through the list if loop is enabled)
-                action_index = (action_index + 1) % len(self.actions)
-                
-                # Check if we've completed all actions
-                if action_index == 0:
-                    stats['cycles_completed'] += 1
+                # Take a new screenshot at the beginning of each cycle
+                screenshot = self.capture_window_screenshot()
+                if not screenshot:
+                    print("Could not capture window screenshot. Is the window visible?")
+                    time.sleep(1)
+                    continue
                     
-                    # Display summary after each cycle
-                    print(f"\nCompleted cycle {stats['cycles_completed']}")
+                self.current_screenshot = screenshot
+                
+                # Check if we should stop based on cycles or all actions being completed
+                any_action_available = False
+                
+                # Perform each action in sequence
+                for i, action in enumerate(self.actions):
+                    action_desc = self._get_action_description(action)
                     
-                    # Always show summary (more detailed in debug mode)
-                    if self.debug_mode:
-                        self._display_automation_summary(stats)
+                    print(f"\nAction {i+1}/{len(self.actions)}: {action_desc}")
+                    
+                    # Keep track of total actions
+                    stats['total'] += 1
+                    
+                    # Perform the action
+                    result = self.perform_action(action)
+                    
+                    if result:
+                        stats['successful'] += 1
+                        action_last_seen[i] = cycle  # Update when this action was last seen/successful
+                        print(f"✓ Success")
                     else:
-                        # Simplified summary for non-debug mode that still shows which actions succeeded/failed
-                        print(f"Success: {stats['successful_actions']}, Failed: {stats['failed_actions']}")
+                        stats['failed'] += 1
+                        stats['failed_details'].append(action_desc)
+                        print(f"✗ Failed")
                         
-                        # Show successful actions
-                        if stats['successful_details']:
-                            print("Successful:")
-                            # Only show the most recent actions (current cycle)
-                            cycle_length = len(self.actions)
-                            recent_successes = stats['successful_details'][-cycle_length:] if cycle_length > 0 else []
-                            for action_desc in recent_successes:
-                                print(f"  ✓ {action_desc}")
+                        # In continuous mode, we'll keep retrying indefinitely
+                        if self.continuous_mode:
+                            any_action_available = True
                         
-                        # Show failed actions
-                        if stats['failed_details']:
-                            print("Failed:")
-                            # Only show the most recent actions (current cycle)
-                            cycle_length = len(self.actions)
-                            recent_failures = stats['failed_details'][-cycle_length:] if cycle_length > 0 else []
-                            for action_desc in recent_failures:
-                                print(f"  ✗ {action_desc}")
+                    # Add delay between actions
+                    time.sleep(self.click_interval)
+                
+                # If not in continuous mode, we stop after one cycle
+                if not self.continuous_mode:
+                    break
                     
-                    # Check if we should continue or stop
-                    if not self.loop_actions:
-                        print("Automation complete")
-                        break
-                    else:
-                        if self.debug_mode:
-                            print("\nStarting next cycle...")
-                        else:
-                            print("Starting next cycle...")
+                # Check if we've gone too long without seeing any actions succeed
+                # This helps prevent infinite loops when no actions are available anymore
+                cycles_since_last_success = cycle - max(action_last_seen.values())
+                if cycles_since_last_success > 5 and cycle > 5:  # Allow a few cycles to start
+                    print("\nNo actions have succeeded in the last 5 cycles. Stopping automation.")
+                    break
+                    
+                # Only continue if actions are still available (relevant in continuous mode)
+                if not any_action_available and not self.continuous_mode:
+                    break
                 
-                # Wait between actions
-                time.sleep(self.click_interval)
-                
-        except KeyboardInterrupt:
-            print("\nStopping automation")
-            self.is_running = False
-        finally:
             # Display summary
             self._display_automation_summary(stats)
-            # Clean up X display connection
-            self.display.close()
+            
+        except KeyboardInterrupt:
+            print("\nAutomation stopped by user.")
+        finally:
+            self.is_running = False
     
     def _get_action_description(self, action):
         """Get a descriptive string for an action"""
@@ -993,43 +1016,17 @@ class SmartAutoclicker:
             
     def _display_automation_summary(self, stats):
         """Display a summary of automation statistics"""
-        run_time = time.time() - stats['start_time']
-        
         print("\n" + "-"*40)
         print("Automation Summary")
         print("-"*40)
-        print(f"Total run time: {run_time:.1f} seconds")
-        print(f"Cycles completed: {stats['cycles_completed']}")
-        print(f"Successful actions: {stats['successful_actions']}")
-        print(f"Failed actions: {stats['failed_actions']}")
+        print(f"Total actions: {stats['total']}")
+        print(f"Successful actions: {stats['successful']}")
+        print(f"Failed actions: {stats['failed']}")
         
-        # In non-debug mode, only show the specific successful/failed actions
-        # In debug mode, also show the type breakdown
-        if stats['action_counts'] and self.debug_mode:
-            print("\nAction type breakdown:")
-            for action_type, counts in stats['action_counts'].items():
-                success = counts['success']
-                fail = counts['fail']
-                total = success + fail
-                if total > 0:
-                    success_rate = (success / total) * 100
-                    print(f"  {action_type}: {success} successes, {fail} failures ({success_rate:.1f}% success rate)")
-        
-        # Always show successful and failed actions in the summary
-        if stats['successful_details']:
-            print("\nSuccessful actions:")
-            # Take only the most recent cycle's worth of actions
-            cycle_length = len(self.actions)
-            recent_successes = stats['successful_details'][-cycle_length:] if cycle_length > 0 else []
-            for action_desc in recent_successes:
-                print(f"  ✓ {action_desc}")
-                
+        # Show failed actions
         if stats['failed_details']:
             print("\nFailed actions:")
-            # Take only the most recent actions (current cycle)
-            cycle_length = len(self.actions)
-            recent_failures = stats['failed_details'][-cycle_length:] if cycle_length > 0 else []
-            for action_desc in recent_failures:
+            for action_desc in stats['failed_details']:
                 print(f"  ✗ {action_desc}")
                 
         print("-"*40)
