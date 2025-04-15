@@ -185,3 +185,77 @@ xinput --test-xi2 $POINTER_ID  # Monitor events
 
 - Fixed an indentation error in the `find_text_in_screenshot` method of image_processor.py
 - Need to ensure all code is properly indented for consistent execution
+
+## Test Improvement Plan (April 12, 2025)
+
+### Test Types to Implement
+
+1. **Unit Testing**
+   - Test individual classes and methods in isolation
+   - Mock external dependencies (X11, subprocess)
+   - Focus on individual component correctness
+
+2. **Integration Testing**
+   - Test interaction between components
+   - Verify modules work together as expected
+   - Test communication between window manager and input manager
+
+3. **Acceptance Testing**
+   - Validate the software meets user requirements
+   - Test common user workflows end-to-end 
+   - Create test scenarios for different window managers
+
+4. **Regression Testing**
+   - Ensure new changes don't break existing functionality
+   - Maintain baseline tests that cover core functionality
+   - Automate tests to catch regressions early
+
+5. **End-to-End Testing**
+   - Test the entire application workflow
+   - Include installation, configuration, and usage
+   - Test with real window interactions (with safeguards)
+
+6. **Smoke Testing**
+   - Quick tests to verify basic functionality
+   - Check that main features work after changes
+   - Fast, simple tests that run before more complex tests
+
+### Modularization Plan
+
+1. **Separate XTestAutoclicker into Components**
+   - Create WindowSelector module for window handling
+   - Create ClickPositionManager for position management
+   - Create EventSender for X11 event interactions
+   - Move CLI parsing to separate module
+
+2. **Create Common Interfaces**
+   - Define clear interfaces between components
+   - Enable easier mocking for testing
+   - Improve extensibility
+
+### Testing Frameworks & Tools
+
+- pytest for test execution
+- unittest.mock for mocking dependencies
+- pytest-cov for test coverage analysis
+- pytest-xvfb for headless X11 testing (when applicable)
+- tox for testing in multiple environments
+
+### Implementation Steps
+
+1. Refactor code into modules
+2. Create test fixtures and mocks
+3. Write unit tests for each module
+4. Create integration tests for module interactions
+5. Implement acceptance tests for user stories
+6. Add regression tests for core functionality
+7. Create end-to-end tests for complete workflows
+8. Implement smoke tests for quick verification
+
+## Next Steps for Testing
+
+[ ] Create test fixtures and mocks
+[ ] Implement unit tests for all modules
+[ ] Set up testing framework with pytest
+[ ] Add CI automation for testing
+[ ] Create documentation about testing
